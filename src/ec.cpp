@@ -32,6 +32,11 @@ void ec::init()
 	ecgroup = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
 }
 
+void ec::cleanup()
+{
+	EC_GROUP_free(ecgroup);
+}
+
 std::string ec::generate()
 {
 	EC_KEY* key = EC_KEY_new();
@@ -98,14 +103,5 @@ bool ec::verify(std::string key_pub, std::string digest, std::string sig)
 std::string ec::get_pubkey(std::string pri_key)
 {
 	return std::string(pri_key.c_str() + pri_key.length() - 64, 64);
-}
-
-std::string ec::get_address(std::string pub_key)
-{
-	char address[32];
-
-	SHA256((unsigned char*)pub_key.c_str(), pub_key.length(), (unsigned char*)address);
-
-	return std::string(address, 20);
 }
 

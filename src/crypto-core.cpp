@@ -1,9 +1,10 @@
 
-#include "base58.hpp"
+#include "address.hpp"
 #include "network.hpp"
 #include "transaction.hpp"
 #include "ec.hpp"
 #include "helpers.hpp"
+#include "block.hpp"
 
 #include <bdf/Bdf.hpp>
 #include <iostream>
@@ -13,36 +14,16 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include <openssl/rand.h>
+#include <openssl/sha.h>
+
 using namespace Bdf;
 
 int main(int cargs, const char** vargs)
 {
-	std::string t = "qwerty";
-	
-	std::cout << base58::encode(t.c_str(), t.length()) << std::endl;
+	ec::init();
 
-	/*ec::init();
-
-	std::string key_pri1 = ec::generate();
-	std::string key_pri2 = ec::generate();
-	std::string key_address1 = ec::get_address(key_pri1);
-	std::string key_address2 = ec::get_address(key_pri2);
-
-	Transaction t;
-
-	t.add_input(key_pri1, 5.2f);
-	t.add_output(key_address2, 4.2f);
-	t.finalize();
-
-	std::cout << t.to_string() << "\n";
-
-	size_t tx_len = t.serialize_len();
-	char* tx = new char[tx_len];
-	t.serialize(tx);
-
-	std::cout << to_hex(tx, tx_len) << "\n";*/
-
-	/*int port = 44554;
+	int port = 44554;
 
 	std::string peer_ip;
 	int peer_port = 44554;
@@ -95,5 +76,7 @@ int main(int cargs, const char** vargs)
 		{
 			std::cerr << "Connected: " << network.getConnections() << std::endl;
 		}
-	}*/
+	}
+
+	ec::cleanup();
 }

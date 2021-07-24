@@ -15,37 +15,49 @@
  *
  */
 
+class Transaction;
+
 class Transaction
 {
 
 public:
 
 	Transaction();
-	Transaction(const char* bytes, size_t len);
-	
+	Transaction(const char** bytes, size_t* len);
+	Transaction(Transaction& t);
+
+	const char* get_errors();
+
 	bool is_valid();
 	bool is_finalized();
 	bool is_confirmed();
 
 	void finalize();
 
-	std::string to_string();
+	std::string to_string(int indent);
 	char* serialize(char* data);
 	size_t serialize_len();
 
 	std::string get_txid();
 	std::string get_hash();
 
-	float get_total();
-	float get_fee();
+	static uint64_t calculate_fee(unsigned int in, unsigned int out, unsigned int extra);
 
-	unsigned long get_created();
-	unsigned long get_received();
+	uint64_t get_total();
+	uint64_t get_fee();
 
-	void add_input(std::string key_pri, float amount);
-	void add_output(std::string address, float amount);
+	uint64_t get_created();
+	uint64_t get_received();
+
+	void add_input(std::string key_pri, uint64_t amount);
+	void add_output(std::string address, uint64_t amount);
+	void add_output(std::string address, uint64_t amount, std::string message);
+
+	std::string get_pubkey();
 
 private:
+
+	size_t count_extra_data();
 
 	char* serialize_t(char* data);
 	size_t serialize_t_len();
@@ -53,31 +65,29 @@ private:
 	struct InputNew
 	{
 		std::string key_pri;
-		float amount;
+		uint64_t amount;
 	};
 	
 	struct Input
 	{
 		std::string sig;
 		std::string key_pub;
-		float amount;
+		uint64_t amount;
 	};
 
 	struct Output
 	{
+		std::string msg;
 		std::string address;
-		float amount;
+		uint64_t amount;
 	};
 		
-	unsigned long created;
-	unsigned long received;
+	uint64_t created;
+	uint64_t received;
 
 	bool confirmed;
 	bool finalized;
 	bool valid;
-
-	float total;
-	float fee;
 
 	std::string txid;
 	std::list<InputNew> inputs_new;
