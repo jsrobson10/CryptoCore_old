@@ -8,5 +8,5 @@ set(CMAKE_CXX_FLAGS "-g")
 file(GLOB_RECURSE SOURCES src/*.cpp)
 add_executable(CryptoCore ${SOURCES})
 
-target_link_libraries(CryptoCore PUBLIC crypto bdf pthread gmp)
+target_link_libraries(CryptoCore PUBLIC crypto oqs bdf pthread gmp jsoncpp)
 

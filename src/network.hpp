@@ -1,16 +1,15 @@
 
 #pragma once
 
+#include "control.hpp"
 #include "bdf-server.hpp"
 
 #include <list>
 #include <queue>
 #include <string>
 
-class Network
+namespace network
 {
-private:
-
 	enum State
 	{
 		NEW, PINGING, ESTABLISHED
@@ -30,17 +29,9 @@ private:
 		int port;
 	};
 	
-	BdfServer<Client> server;
-	std::list<std::string> banned;
-	std::queue<Bdf::BdfReader*> broadcast_queue;
-	std::queue<Peer> peer_connect_queue;
-	int connection_port;
-
 	void handleConnection(BdfSock<Client>* connection);
 
-public:
-	
-	Network(int port);
+	void init(int port);
 	
 	void update();
 	void ban(BdfSock<Client>* connection);

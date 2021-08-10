@@ -21,21 +21,32 @@ using namespace Bdf;
  *
  */
 
+namespace network
+{
+	Control control;
+	BdfServer<Client>* server;
+	std::list<std::string> banned;
+	std::queue<Bdf::BdfReader*> broadcast_queue;
+	std::queue<Peer> peer_connect_queue;
+	int connection_port;
+};
+
 const int network_cap = 3;
 
-Network::Network(int port) : server(port)
+void network::init(int port)
 {
+	server = new BdfServer<Client>(port);
 	connection_port = port;
 }
 
-void Network::broadcast(BdfReader* reader)
+void network::broadcast(BdfReader* reader)
 {
 	broadcast_queue.push(reader);
 }
 
-void Network::ban(BdfSock<Network::Client>* connection)
+void network::ban(BdfSock<network::Client>* connection)
 {
-	Network::Client* client = connection->getData();
+	network::Client* client = connection->getData();
 	
 	if(!isBanned(client->ip))
 	{
@@ -47,9 +58,9 @@ void Network::ban(BdfSock<Network::Client>* connection)
 	connection->close();
 }
 
-bool Network::isBanned(std::string ip)
+bool network::isBanned(std::string ip)
 {
-	for(std::string check : banned)
+	for(std::string& check : banned)
 	{
 		if(check == ip)
 		{
@@ -60,60 +71,60 @@ bool Network::isBanned(std::string ip)
 	return false;
 }
 
-bool Network::isConnected(std::string ip, int port)
+bool network::isConnected(std::string ip, int port)
 {
-	server.lock();
+	server->lock();
 	{
-		std::list<BdfSock<Network::Client>*>& connections = server.getConnections();
+		std::list<BdfSock<network::Client>*>& connections = server->getConnections();
 
-		for(BdfSock<Network::Client>* connection : connections)
+		for(BdfSock<network::Client>* connection : connections)
 		{
 			if(connection->connected() && connection->dataIsSet())
 			{
-				Network::Client* data = connection->getData();
+				network::Client* data = connection->getData();
 
 				if(data->ip == ip && data->port == port)
 				{
-					server.unlock();
+					server->unlock();
 					return true;
 				}
 			}
 		}
 	}
 
-	server.unlock();
+	server->unlock();
 
 	return false;
 }
 
-void Network::connect(std::string ip, int port)
+void network::connect(std::string ip, int port)
 {
 	if(isConnected(ip, port) || isBanned(ip))
 	{
 		return;
 	}
 
-	BdfSock<Network::Client>* connection = server.connect(ip, port);
-	Network::Client* data = connection->getData();
+	BdfSock<network::Client>* connection = server->connect(ip, port);
+	network::Client* data = connection->getData();
 
 	data->ip = connection->getIP();
 	data->port = port;
-	data->state = Network::State::NEW;
+	data->state = network::State::NEW;
 	data->ping = get_micros();
 
 	connection->setData();
 }
 
-void Network::handleConnection(BdfSock<Network::Client>* connection)
+void network::handleConnection(BdfSock<network::Client>* connection)
 {
 	BdfReader* reader_recv;
-	Network::Client* client = connection->getData();
+	network::Client* client = connection->getData();
 
 	// setup any new connections and ping the peer to get the time and ip
-	if(!connection->dataIsSet() || client->state == Network::State::NEW)
+	if(!connection->dataIsSet() || client->state == network::State::NEW)
 	{
 		// setup the new connection
-		client->state = Network::State::PINGING;
+		client->state = network::State::PINGING;
 		client->ip = connection->getIP();
 		client->ping = get_micros();
 		client->port = 0;
@@ -158,15 +169,15 @@ void Network::handleConnection(BdfSock<Network::Client>* connection)
 			nl_s->get("port")->setInteger(connection_port);
 			BdfList* peers_l = nl_s->get("peers")->getList();
 
-			auto connections = server.getConnections();
+			auto connections = server->getConnections();
 
 			for(auto connection : connections)
 			{
 				if(connection->ready() && connection->connected() && connection->dataIsSet())
 				{
-					Network::Client* client = connection->getData();
+					network::Client* client = connection->getData();
 
-					if(client->state != Network::State::ESTABLISHED)
+					if(client->state != network::State::ESTABLISHED)
 					{
 						continue;
 					}
@@ -187,13 +198,13 @@ void Network::handleConnection(BdfSock<Network::Client>* connection)
 		// recieve ping responses
 		else if(method == "pong")
 		{
-			if(client->state != Network::State::PINGING)
+			if(client->state != network::State::PINGING)
 			{
 				delete reader_recv;
 				continue;
 			}
 
-			client->state = Network::State::ESTABLISHED;
+			client->state = network::State::ESTABLISHED;
 			client->port = nl->get("port")->getInteger();
 			client->ping = get_micros() - client->ping;
 		}
@@ -201,7 +212,7 @@ void Network::handleConnection(BdfSock<Network::Client>* connection)
 		// peer discovery
 		if(method == "peers" || method == "pong")
 		{
-			if(server.count() >= network_cap)
+			if(server->count() >= network_cap)
 			{
 				delete reader_recv;
 				continue;
@@ -219,7 +230,7 @@ void Network::handleConnection(BdfSock<Network::Client>* connection)
 
 				if(port > 0 && port <= 65535)
 				{
-					Network::Peer peer;
+					network::Peer peer;
 					peer.ip = ip;
 					peer.port = port;
 
@@ -230,15 +241,49 @@ void Network::handleConnection(BdfSock<Network::Client>* connection)
 			}
 		}
 
+		// new raw transaction
+		else if(method == "newtransaction")
+		{
+			char* data;
+			int len;
+
+			nl->get("data")->getByteArray(&data, &len);
+
+			Transaction* t = new Transaction(data, len, nullptr, nullptr);
+			
+			int result = control.process_new_transaction(t);
+
+			// illegal
+			if(result == -1)
+			{
+				ban(connection);
+			}
+
+			// broadcast
+			else if(result == 1)
+			{
+				BdfReader* reader_b = new BdfReader();
+				BdfObject* bdf_b = reader_b->getObject();
+				BdfNamedList* nl_b = bdf_b->getNamedList();
+
+				nl_b->get("method")->setString("newtransaction");
+				nl_b->get("data")->setByteArray(data, len);
+				
+				broadcast(reader_b);
+			}
+			
+			delete[] data;
+		}
+
 		delete reader_recv;
 	}
 }
 
-void Network::update()
+void network::update()
 {
-	server.lock();
+	server->lock();
 	{
-		auto connections = server.getConnections();
+		auto connections = server->getConnections();
 		bool all_ready = true;
 
 		// handle messages from all connections
@@ -254,7 +299,7 @@ void Network::update()
 			{
 				handleConnection(connection);
 
-				if(connection->dataIsSet() && connection->getData()->state != Network::State::ESTABLISHED)
+				if(connection->dataIsSet() && connection->getData()->state != network::State::ESTABLISHED)
 				{
 					all_ready = false;
 				}
@@ -266,29 +311,29 @@ void Network::update()
 			// add peers in the queue once all new peers are ready
 			if(!peer_connect_queue.empty())
 			{
-				Network::Peer peer = peer_connect_queue.front();
+				network::Peer peer = peer_connect_queue.front();
 				peer_connect_queue.pop();
 	
-				if(!isConnected(peer.ip, peer.port) && !isBanned(peer.ip) && server.count() < network_cap)
+				if(!isConnected(peer.ip, peer.port) && !isBanned(peer.ip) && server->count() < network_cap)
 				{
-					server.connect(peer.ip, peer.port);
+					server->connect(peer.ip, peer.port);
 					std::cerr << "Connected to " << peer.ip << ":" << peer.port << std::endl;
 				}
 			}
 		}
 
-		int connection_count = server.count();
+		int connection_count = server->count();
 
 		// remove connections if above the limit but keep some connections with high ping
 		if(connection_count > network_cap)
 		{
 			unsigned long ping_max_last = 0xffffffffffffffff;
-			BdfSock<Network::Client>* connection_max_last = NULL;
+			BdfSock<network::Client>* connection_max_last = NULL;
 
 			for(int i = 0; i < connection_count / 2; i++)
 			{
 				unsigned long ping_max = 0;
-				BdfSock<Network::Client>* connection_max = NULL;
+				BdfSock<network::Client>* connection_max = NULL;
 			
 				for(auto connection : connections)
 				{
@@ -297,9 +342,9 @@ void Network::update()
 						continue;
 					}
 	
-					Network::Client* data = connection->getData();
+					network::Client* data = connection->getData();
 
-					if(data->state != Network::State::ESTABLISHED)
+					if(data->state != network::State::ESTABLISHED)
 					{
 						continue;
 					}
@@ -324,12 +369,12 @@ void Network::update()
 			}
 		}
 
-		server.cullConnections();
+		server->cullConnections();
 	}
-	server.unlock();
+	server->unlock();
 }
 
-int Network::getConnections()
+int network::getConnections()
 {
-	return server.count();
+	return server->count();
 }

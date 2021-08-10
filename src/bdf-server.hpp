@@ -22,7 +22,7 @@ private:
 	std::list<BdfSock<T>*> connections;
 	std::mutex mtx;
 	
-	size_t addrlen;
+	socklen_t addrlen;
 	struct sockaddr_in addr;
 	int mtx_local = 0;
 	int sockfd;
@@ -32,7 +32,7 @@ private:
 	{
 		while(alive())
 		{
-			int sock_new = accept(sockfd, (struct sockaddr*)&addr, (socklen_t*)&addrlen);
+			int sock_new = accept(sockfd, (struct sockaddr*)&addr, &addrlen);
 			
 			if(sock_new < 0)
 			{

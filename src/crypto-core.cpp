@@ -1,10 +1,11 @@
 
+#include "http.hpp"
+#include "web.hpp"
+#include "sig.hpp"
 #include "address.hpp"
 #include "network.hpp"
 #include "transaction.hpp"
-#include "ec.hpp"
 #include "helpers.hpp"
-#include "block.hpp"
 
 #include <bdf/Bdf.hpp>
 #include <iostream>
@@ -19,47 +20,89 @@
 
 using namespace Bdf;
 
+void display_help(const char** vargs)
+{
+	std::cerr << "Usage: " << vargs[0] << " ...\n";
+	std::cerr << "  --help                  Display this message.\n";
+	std::cerr << "  --generate-new          Generate a new header file for a new web. Useful for making altcoins.\n";
+	std::cerr << "  --port <num>            Listen on a different p2p port (default is 44554).\n";
+	std::cerr << "  --http-port <num>       Listen on a different http port (default is 44555).\n";
+	std::cerr << "  --connect <ip> <port?>  Connect to the given peer. Will use the default port if none is given.\n";
+	std::cerr << "\n";
+}
+
 int main(int cargs, const char** vargs)
 {
-	ec::init();
-
 	int port = 44554;
+	int http_port = 44555;
 
+	int peer_port = 0;
 	std::string peer_ip;
-	int peer_port = 44554;
-	bool peer_initial = false;
 
-	if(cargs >= 2 && cargs <= 4)
+	for(int i = 1; i < cargs; i++)
 	{
-		port = std::stoi(vargs[1]);
-	}
+		try
+		{
+			std::string arg = vargs[i];
+	
+			if(arg == "--generate-new")
+			{
+				web::generate_new();
+				return 0;
+			}
+	
+			else if(arg == "--port" && i < cargs - 1)
+			{
+				i += 1;
+				port = std::stoi(vargs[i]);
+			}
 
-	if(cargs >= 3 && cargs <= 4)
-	{
-		peer_ip = std::string(vargs[2]);
-		peer_initial = true;
-	}
+			else if(arg == "--http-port" && i < cargs - 1)
+			{
+				i += 1;
+				http_port = std::stoi(vargs[i]);
+			}
 
-	if(cargs == 4)
-	{
-		peer_port = std::stoi(vargs[3]);
-	}
+			else if(arg == "--connect" && i < cargs - 1)
+			{
+				peer_ip = std::string(vargs[i+1]);
 
-	else if(cargs > 4)
-	{
-		std::cerr << "Usage: ";
-		std::cerr << vargs[0];
-		std::cerr << " <port> <peer ip> <peer port>\n\n";
-		return 1;
+				if(i < cargs - 2)
+				{
+					peer_port = std::stoi(vargs[i+2]);
+
+					i += 2;
+				}
+
+				else
+				{
+					i += 1;
+				}
+			}
+	
+			else
+			{
+				display_help(vargs);
+				return 1;
+			}
+		}
+
+		catch(std::exception& e)
+		{
+			display_help(vargs);
+			return 1;
+		}
 	}
 
 	signal(SIGPIPE, SIG_IGN);
-		
-	Network network(port);
 
-	if(peer_initial)
+	web::init();
+	http::init(http_port);
+	network::init(port);
+		
+	if(peer_port > 0)
 	{
-		network.connect(peer_ip, peer_port);
+		network::connect(peer_ip, peer_port);
 	}
 
 	int c = 0;
@@ -68,15 +111,10 @@ int main(int cargs, const char** vargs)
 	{
 		usleep(1000);
 
-		network.update();
-
-		c = (c + 1) % 1000;
-
-		if(c == 0)
-		{
-			std::cerr << "Connected: " << network.getConnections() << std::endl;
-		}
+		network::update();
+		http::update();
 	}
 
-	ec::cleanup();
+	web::cleanup();
+	http::cleanup();
 }

@@ -8,15 +8,17 @@
 
 std::string base58::encode(const char* data, size_t len)
 {
-	const char MAP[] = {
-			'1','2','3','4','5','6','7','8',
-			'9','A','B','C','D','E','F','G',
-			'H','J','K','L','M','N','P','Q',
-			'R','S','T','U','V','W','X','Y',
-			'Z','a','b','c','d','e','f','g',
-			'h','i','j','k','m','n','o','p',
-			'q','r','s','t','u','v','w','x',
-			'y','z'};
+	const char MAP[] =
+	{
+		'1','2','3','4','5','6','7','8',
+		'9','A','B','C','D','E','F','G',
+		'H','J','K','L','M','N','P','Q',
+		'R','S','T','U','V','W','X','Y',
+		'Z','a','b','c','d','e','f','g',
+		'h','i','j','k','m','n','o','p',
+		'q','r','s','t','u','v','w','x',
+		'y','z'
+	};
 
 	mpz_t data_n;
 	
@@ -60,7 +62,8 @@ std::string base58::encode(const char* data, size_t len)
 
 std::string base58::decode(const char* data, size_t len)
 {
-	const unsigned char MAP[] = {
+	const unsigned char MAP[] =
+	{
 		0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
 		0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
 		0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
