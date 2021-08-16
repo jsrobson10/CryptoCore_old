@@ -23,7 +23,7 @@ class Transaction
 public:
 
 	Transaction();
-	Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n);
+	Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos);
 	Transaction(Transaction& t);
 
 	const char* get_errors();
@@ -71,8 +71,6 @@ public:
 	void set_pos(uint64_t pos);
 
 	bool add_confirm(std::string id);
-
-private:
 
 	struct InputNew
 	{

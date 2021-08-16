@@ -3,6 +3,8 @@
 #include "network.hpp"
 #include "bdf/Bdf.hpp"
 
+#include <iostream>
+
 using namespace Bdf;
 
 /*
@@ -35,6 +37,8 @@ const int network_cap = 3;
 
 void network::init(int port)
 {
+	std::cout << "Listening for peers on port " << port << std::endl;
+	
 	server = new BdfServer<Client>(port);
 	connection_port = port;
 }
@@ -50,7 +54,7 @@ void network::ban(BdfSock<network::Client>* connection)
 	
 	if(!isBanned(client->ip))
 	{
-		std::cerr << "Client with IP " << client->ip << " has been banned.\n";
+		std::cout << "Client with IP " << client->ip << " has been banned.\n";
 
 		banned.push_front(client->ip);
 	}
@@ -249,7 +253,7 @@ void network::handleConnection(BdfSock<network::Client>* connection)
 
 			nl->get("data")->getByteArray(&data, &len);
 
-			Transaction* t = new Transaction(data, len, nullptr, nullptr);
+			Transaction* t = new Transaction(data, len, nullptr, nullptr, 0);
 			
 			int result = control.process_new_transaction(t);
 
@@ -317,7 +321,7 @@ void network::update()
 				if(!isConnected(peer.ip, peer.port) && !isBanned(peer.ip) && server->count() < network_cap)
 				{
 					server->connect(peer.ip, peer.port);
-					std::cerr << "Connected to " << peer.ip << ":" << peer.port << std::endl;
+					std::cout << "Connected to " << peer.ip << ":" << peer.port << std::endl;
 				}
 			}
 		}

@@ -26,6 +26,7 @@ namespace http
 	private:
 		
 		std::thread handle;
+		char buffer[102400];
 	
 		void run();
 	};

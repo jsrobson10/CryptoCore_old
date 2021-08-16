@@ -3,6 +3,7 @@
 #include "transaction.hpp"
 #include "helpers.hpp"
 #include "sig.hpp"
+#include "web.hpp"
 
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -17,8 +18,8 @@
  * [txid, 32]
  * [verify1, 32]
  * [verify2, 32]
- * [inputs, 1]
- * [outputs, 1]
+ * [inputs, 2]
+ * [outputs, 2]
  * (inputs)
  * {
  *   [prev, 32]
@@ -34,7 +35,7 @@
  * {
  *	 [address, 20]
  *	 [amount, 8]
- *	 [msglen, 1]
+ *	 [msglen, 2]
  *	 [msg, msglen]
  * }
  * !
@@ -63,6 +64,7 @@ Transaction::Transaction()
 
 Transaction::Transaction(Transaction& t)
 {
+	pos = t.pos;
 	verified = t.verified;
 	created = t.created;
 	received = t.received;
@@ -82,8 +84,9 @@ Transaction::Transaction(Transaction& t)
 	outputs = std::list<Transaction::Output>(t.outputs);
 }
 
-Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n)
+Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos)
 {
+	pos = txpos;
 	received = get_micros();
 	created = received;
 	verified = false;
@@ -91,7 +94,7 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 	finalized = true;
 	valid = true;
 
-	if(len < 202)
+	if(len < 204)
 	{
 		valid = false;
 		return;
@@ -106,11 +109,11 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 	
 	const char* end = bytes + len;
 	
-	int inputs_len = ((unsigned char*)bytes)[104];
-	int outputs_len = ((unsigned char*)bytes)[105];
+	int inputs_len = get_netus(bytes + 104);
+	int outputs_len = get_netus(bytes + 106);
 
-	bytes += 106;
-	len -= 106;
+	bytes += 108;
+	len -= 108;
 
 	// add the inputs
 	for(int i = 0; i < inputs_len; i++)
@@ -121,7 +124,6 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 		input.pubkey = std::string(bytes + 32, SIG_LEN_PUBKEY);
 		input.balance = get_netul(bytes + 32 + SIG_LEN_PUBKEY);
 		input.address = address::frompubkey(input.pubkey);
-		inputs.push_back(input);
 
 		int c = 42 + SIG_LEN_PUBKEY;
 
@@ -137,6 +139,8 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 			bytes += 32;
 			len -= 32;
 		}
+		
+		inputs.push_back(input);
 	}
 
 	// add the outputs
@@ -144,14 +148,14 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 	{
 		Transaction::Output output;
 
-		uint8_t msglen = (uint8_t)(bytes[28]);
+		uint16_t msglen = get_netus(bytes + 28);
 
 		output.address = std::string(bytes, 20);
 		output.amount = get_netul(bytes + 20);
-		output.msg = std::string(bytes + 29, msglen);
+		output.msg = std::string(bytes + 30, msglen);
 		outputs.push_back(output);
 
-		int c = 29 + msglen;
+		int c = 30 + msglen;
 
 		bytes += c;
 		len -= c;
@@ -250,6 +254,8 @@ int Transaction::has_address(std::string address)
 	return count;
 }
 
+#include <iostream>
+
 const char* Transaction::get_errors()
 {
 	if(!this->valid)
@@ -270,8 +276,6 @@ const char* Transaction::get_errors()
 		// calculate total in
 		for(Transaction::Input& input : inputs)
 		{
-			//total_in += input.balance;
-	
 			if(has_address(input.address) != 1)
 			{
 				return "cannot have any address duplicates";
@@ -281,12 +285,53 @@ const char* Transaction::get_errors()
 			{
 				return "next/prev cannot reference itself";
 			}
+
+			uint64_t balance = 0;
+			Transaction* prev = web::get_transaction(input.prev);
+
+			// get the last transactions balance
+			if(prev != nullptr)
+			{
+				for(Transaction::Input& in : prev->inputs)
+				{
+					if(in.address == input.address)
+					{
+						balance = in.balance;
+						break;
+					}
+				}
+			}
+
+			// add all unconfirmed balance
+			for(std::string source_txid : input.sources)
+			{
+				Transaction* source = web::get_transaction(source_txid);
+
+				for(Transaction::Output& out : source->outputs)
+				{
+					if(out.address == input.address)
+					{
+						balance += out.amount;
+					}
+				}
+
+				delete source;
+			}
+
+			if(input.balance > balance)
+			{
+				delete prev;
+				std::cout << "input.balance = " << input.balance << ", balance = " << balance << std::endl;
+				return "invalid input balance";
+			}
+
+			total_in += balance - input.balance;
 		}
 	
 		// calculate total out
 		for(Transaction::Output& output : outputs)
 		{
-			//total_out += output.amount;
+			total_out += output.amount;
 			
 			if(has_address(output.address) != 1)
 			{
@@ -301,10 +346,10 @@ const char* Transaction::get_errors()
 		}
 	
 		// total in/out mismatch
-		//if(total_in != total_out)
-		//{
-		//	return "total in does not match total out";
-		//}
+		if(total_in != total_out)
+		{
+			return "total in does not match total out";
+		}
 	
 		// check confirms and verifies for duplicates or self references
 		
@@ -340,9 +385,16 @@ const char* Transaction::get_errors()
 		}
 	}
 
-	// check for invalid signatures
+	// check for invalid signatures and file sizes
 	
 	size_t tx_len = serialize_t_len();
+
+	// 1 MB limit
+	if(tx_len > 1048576)
+	{
+		return "transaction too large";
+	}
+
 	char* tx = new char[tx_len];
 	serialize_t(tx);
 
@@ -397,10 +449,10 @@ size_t Transaction::serialize_t_len()
 
 	for(Transaction::Output& output : outputs)
 	{
-		len_outputs += output.msg.length() + 29;
+		len_outputs += output.msg.length() + 30;
 	}
 
-	return 106 + len_inputs + len_outputs;
+	return 108 + len_inputs + len_outputs;
 }
 
 char* Transaction::serialize_t(char* data)
@@ -411,14 +463,15 @@ char* Transaction::serialize_t(char* data)
 	memcpy_if(data + 40, verifies[0].c_str(), '\0', 32, verifies[0].length() == 32);
 	memcpy_if(data + 72, verifies[1].c_str(), '\0', 32, verifies[1].length() == 32);
 
+	put_netus(data + 106, outputs.size());
 	data[105] = outputs.size();
 
 	// write finalized inputs
 	
 	if(finalized)
 	{
-		data[104] = (char)inputs.size();
-		data += 106;
+		put_netus(data + 104, inputs.size());
+		data += 108;
 		
 		for(Transaction::Input& input : inputs)
 		{
@@ -441,8 +494,8 @@ char* Transaction::serialize_t(char* data)
 
 	else
 	{
-		data[104] = (char)inputs_new.size();
-		data += 106;
+		put_netus(data + 104, inputs_new.size());
+		data += 108;
 
 		for(Transaction::InputNew& input : inputs_new)
 		{
@@ -476,11 +529,10 @@ char* Transaction::serialize_t(char* data)
 
 		memcpy(data, output.address.c_str(), 20);
 		put_netul(data + 20, output.amount);
+		put_netus(data + 28, msg_len);
 
-		data[28] = msg_len;
-
-		memcpy(data + 29, output.msg.c_str(), msg_len);
-		data += 29 + msg_len;
+		memcpy(data + 30, output.msg.c_str(), msg_len);
+		data += 30 + msg_len;
 	}
 
 	return data;
@@ -549,7 +601,13 @@ void Transaction::finalize()
 	char* tx = new char[txlen];
 
 	serialize_t(tx);
+
 	SHA256((unsigned char*)tx, txlen, (unsigned char*)txhash_c);
+
+	while(txhash_c[0] != 0)
+	{
+		
+	}
 
 	std::string txhash(txhash_c, 32);
 
@@ -662,9 +720,9 @@ Json::Value Transaction::to_json()
 	Json::Value root;
 
 	if(!is_id_unset) root["txid"] = to_hex(txid);
-	root["created"] = created;
-	root["received"] = received;
-	root["total"] = get_total();
+	root["created"] = std::to_string(created);
+	root["received"] = std::to_string(received);
+	root["total"] = std::to_string(get_total());
 	root["confirmed"] = is_confirmed();
 	root["finalized"] = is_finalized();
 	root["valid"] = error ? false : true;
@@ -703,7 +761,7 @@ Json::Value Transaction::to_json()
 			input_j["address"] = address::fromhash(input.address);
 			input_j["pubkey"] = to_hex(input.pubkey);
 			input_j["sig"] = to_hex(input.sig);
-			input_j["balance"] = display_coins(input.balance);
+			input_j["balance"] = std::to_string(input.balance);
 			if(!is_id_unset(input.prev)) input_j["prev"] = to_hex(input.prev);
 			if(!is_id_unset(input.next)) input_j["next"] = to_hex(input.next);
 
@@ -730,7 +788,7 @@ Json::Value Transaction::to_json()
 
 			input_j["address"] = address::fromhash(input.address);
 			input_j["pubkey"] = to_hex(sig::getpubkey(input.prikey));
-			input_j["balance"] = display_coins(input.balance);
+			input_j["balance"] = std::to_string(input.balance);
 			if(!is_id_unset(input.prev)) input_j["prev"] = to_hex(input.prev);
 			if(!is_id_unset(input.next)) input_j["next"] = to_hex(input.next);
 
@@ -756,7 +814,7 @@ Json::Value Transaction::to_json()
 		Json::Value output_j;
 
 		output_j["address"] = address::fromhash(output.address);
-		output_j["amount"] = output.amount;
+		output_j["amount"] = std::to_string(output.amount);
 
 		if(output.msg.length() > 0)
 		{

@@ -19,6 +19,7 @@ public:
 	void end(uint128_t offset);
 	void shift(int128_t amount);
 	uint128_t get_pos();
+	uint128_t get_len();
 	void flush();
 	void close();
 	bool eof();

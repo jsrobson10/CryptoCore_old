@@ -6,6 +6,7 @@
 #include "helpers.hpp"
 #include "database.hpp"
 
+#include <functional>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -57,7 +58,8 @@ Transaction* web::get_transaction(uint128_t pos)
 	char* txc = new char[txlen];
 
 	transactions->read(txc, txlen);
-	Transaction* tx = new Transaction(txc, txlen, nullptr, nullptr);
+	Transaction* tx = new Transaction(txc, txlen, nullptr, nullptr, pos);
+	tx->set_pos(pos);
 	
 	delete[] txc;
 	return tx;
@@ -143,10 +145,163 @@ Transaction* web::get_transaction(const char* txid)
 	return nullptr;
 }
 
-bool web::find_transactions(std::list<Transaction*>& transactions, std::string after, int limit)
+void web::get_address_info(std::string address, uint64_t& balance, Transaction*& latest, std::list<Transaction*>& sources_new, uint64_t sources_new_limit)
+{
+	latest = get_latest_from_address(address);
+	balance = 0;
+
+	// an address that hasn't been spent needs to be searched
+	if(latest == nullptr)
+	{
+		find_outputs(address, "", [&balance, &sources_new, sources_new_limit](Transaction& tx, Transaction::Output& out)
+		{
+			balance += out.amount;
+
+			if(sources_new.size() < sources_new_limit)
+			{
+				sources_new.push_back(new Transaction(tx));
+			}
+
+			return true;
+		});
+
+		return;
+	}
+
+	Transaction* prev = nullptr;
+	std::list<std::string> sources;
+
+	// find the sources of the latest spend and the previous transaction
+	for(Transaction::Input& in : latest->inputs)
+	{
+		if(in.address == address)
+		{
+			if(in.prev != "")
+			{
+				prev = get_transaction(in.prev);
+			}
+
+			sources = in.sources;
+			balance = in.balance;
+		}
+	}
+
+	// address has only spent once
+	if(prev == nullptr)
+	{
+		find_outputs(address, "", [&balance, &sources, &sources_new, sources_new_limit](Transaction& tx, Transaction::Output& out)
+		{
+			std::string txid = tx.get_txid();
+			
+			for(std::string& source : sources)
+			{
+				if(source == txid)
+				{
+					return true;
+				}
+			}
+			
+			if(sources_new.size() < sources_new_limit)
+			{
+				sources_new.push_back(new Transaction(tx));
+			}
+
+			balance += out.amount;
+
+			return true;
+		});
+		
+		return;
+	}
+
+	std::string source_best;
+	uint64_t source_best_at = -1;
+
+	// address spent more than once
+	for(Transaction::Input& in : prev->inputs)
+	{
+		for(std::string& source : in.sources)
+		{
+			sources.push_back(source);
+
+			uint64_t source_at = get_id_data(source.c_str());
+
+			if(source_at > source_best_at)
+			{
+				source_best = source;
+			}
+		}
+	}
+
+	find_outputs(address, source_best, [&balance, &sources, &sources_new, sources_new_limit](Transaction& tx, Transaction::Output& out)
+	{
+		std::string txid = tx.get_txid();
+		
+		for(std::string& source : sources)
+		{
+			if(source == txid)
+			{
+				return true;
+			}
+		}
+		
+		if(sources_new.size() < sources_new_limit)
+		{
+			sources_new.push_back(new Transaction(tx));
+		}
+
+		balance += out.amount;
+
+		return true;
+	});
+}
+
+Transaction* web::get_latest_from_address(std::string address)
+{
+	chain->end(0);
+	
+	// 1 MB transaction buffer
+	char* txbuff = new char[1048576];
+
+	while(chain->get_pos() != 0)
+	{
+		chain->shift(-16);
+		uint128_t txpos = chain->read_netue();
+
+		chain->shift(-16);
+		transactions->begin(txpos);
+
+		uint32_t txlen = transactions->read_netui();
+
+		// prevent buffer overflow
+		if(txlen > 1048576)
+		{
+			continue;
+		}
+
+		transactions->read(txbuff, txlen);
+		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos);
+
+		for(Transaction::Input& in : tx.inputs)
+		{
+			if(in.address == address)
+			{
+				delete[] txbuff;
+				return new Transaction(tx);
+			}
+		}
+	}
+
+	delete[] txbuff;
+	return nullptr;
+}
+
+uint64_t web::find_outputs(std::list<Transaction*>& transactions_found, std::string find, std::string after, uint64_t limit)
 {
 	uint64_t begin = 0;
+	uint64_t found = 0;
 
+	// find the position to start searching at
 	if(after.length() == 32)
 	{
 		Transaction* t = web::get_transaction(after);
@@ -156,12 +311,61 @@ bool web::find_transactions(std::list<Transaction*>& transactions, std::string a
 		delete t;
 	}
 
-	return false; //TODO
+	chain->begin((uint128_t)begin * 16);
+
+	// 1 MB transaction buffer
+	char* txbuff = new char[1048576];
+
+	while(found < limit && !chain->eof())
+	{
+		uint128_t txpos = chain->read_netue();
+		transactions->begin(txpos);
+
+		uint32_t txlen = transactions->read_netui();
+
+		// prevent buffer overflow
+		if(txlen > 1048576)
+		{
+			continue;
+		}
+
+		transactions->read(txbuff, txlen);
+		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos);
+
+		for(Transaction::Output& out : tx.outputs)
+		{
+			if(out.address == find)
+			{
+				transactions_found.push_back(new Transaction(tx));
+				found += 1;
+				break;
+			}
+		}
+	}
+
+	delete[] txbuff;
+	return found;
 }
 
-void web::show_all()
+uint64_t web::find_outputs(std::string find, std::string after, std::function<bool (Transaction& tx, Transaction::Output& out)> callback)
 {
-	chain->begin(0);
+	uint64_t begin = 0;
+	uint64_t found = 0;
+
+	// find the position to start searching at
+	if(after.length() == 32)
+	{
+		Transaction* t = web::get_transaction(after);
+
+		begin = t->get_pos() + 1;
+
+		delete t;
+	}
+
+	chain->begin((uint128_t)begin * 16);
+
+	// 1 MB transaction buffer
+	char* txbuff = new char[1048576];
 
 	while(!chain->eof())
 	{
@@ -169,14 +373,64 @@ void web::show_all()
 		transactions->begin(txpos);
 
 		uint32_t txlen = transactions->read_netui();
-		char* txc = new char[txlen];
 
-		transactions->read(txc, txlen);
-		Transaction tx(txc, txlen, nullptr, nullptr);
-		delete[] txc;
+		// prevent buffer overflow
+		if(txlen > 1048576)
+		{
+			continue;
+		}
+
+		transactions->read(txbuff, txlen);
+		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos);
+
+		for(Transaction::Output& out : tx.outputs)
+		{
+			if(out.address == find)
+			{
+				if(!callback(tx, out))
+				{
+					delete[] txbuff;
+					return found;
+				}
+
+				found += 1;
+
+				break;
+			}
+		}
+	}
+
+	delete[] txbuff;
+	return found;
+}
+
+void web::show_all()
+{
+	chain->begin(0);
+	
+	// 1 MB transaction buffer
+	char* txbuff = new char[1048576];
+
+	while(!chain->eof())
+	{
+		uint128_t txpos = chain->read_netue();
+		transactions->begin(txpos);
+
+		uint32_t txlen = transactions->read_netui();
+		
+		// prevent buffer overflow
+		if(txlen > 1048576)
+		{
+			continue;
+		}
+		
+		transactions->read(txbuff, txlen);
+		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos);
 
 		std::cout << tx.to_string(0) << std::endl;
 	}
+
+	delete[] txbuff;
 }
 
 void web::add_transaction(Transaction* t)
@@ -206,6 +460,8 @@ void web::add_transaction(Transaction* t)
 
 	transactions->write(tx, txlen + 4);
 	transactions->flush();
+
+	delete[] tx;
 }
 
 void web::init()
@@ -221,7 +477,7 @@ void web::init()
 
 	if(len_t == -1 || len_c == -1 || len_t < sizeof(BIN_TRANSACTIONS) || len_c < sizeof(BIN_CHAIN))
 	{
-		std::cerr << "Initializing the web\n";
+		std::cout << "Initializing the web\n";
 
 		transactions->close();
 		chain->close();

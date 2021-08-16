@@ -44,14 +44,32 @@ void Database::begin(uint128_t offset)
 
 void Database::end(uint128_t offset)
 {
-	pos = len - (uint64_t)offset;
-	file->seekg(pos, std::ios::beg);
+	if(offset > len)
+	{
+		pos = 0;
+		file->seekg(0, std::ios::beg);
+	}
+	
+	else
+	{
+		pos = len - (uint64_t)offset;
+		file->seekg(pos, std::ios::beg);
+	}
 }
 
 void Database::shift(int128_t offset)
 {
-	pos += (int64_t)offset;
-	file->seekg(pos, std::ios::beg);
+	if(offset < 0 && -offset > pos)
+	{
+		pos = 0;
+		file->seekg(0, std::ios::beg);
+	}
+	
+	else
+	{
+		pos += (int64_t)offset;
+		file->seekg(pos, std::ios::beg);
+	}
 }
 
 uint128_t Database::get_pos()
@@ -62,6 +80,11 @@ uint128_t Database::get_pos()
 	}
 	
 	return pos;
+}
+
+uint128_t Database::get_len()
+{
+	return len;
 }
 
 void Database::flush()

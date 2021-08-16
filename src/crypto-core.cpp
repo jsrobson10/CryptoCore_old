@@ -6,6 +6,7 @@
 #include "network.hpp"
 #include "transaction.hpp"
 #include "helpers.hpp"
+#include "config.hpp"
 
 #include <bdf/Bdf.hpp>
 #include <iostream>
@@ -96,9 +97,11 @@ int main(int cargs, const char** vargs)
 
 	signal(SIGPIPE, SIG_IGN);
 
+	config::load();
+
 	web::init();
-	http::init(http_port);
 	network::init(port);
+	http::init(http_port);
 		
 	if(peer_port > 0)
 	{
