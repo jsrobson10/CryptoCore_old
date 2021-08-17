@@ -4,10 +4,13 @@
 #include "helpers.hpp"
 #include "sig.hpp"
 #include "web.hpp"
+#include "config.hpp"
 
 #include <openssl/sha.h>
 #include <openssl/rand.h>
+#include <unistd.h>
 
+#include <thread>
 #include <cstring>
 
 /*
@@ -15,9 +18,10 @@
  * Transaction binary format:
  *
  * [created, 8]
+ * [txnoise, 32]
  * [txid, 32]
- * [verify1, 32]
- * [verify2, 32]
+ * [verify1, 64]
+ * [verify2, 64]
  * [inputs, 2]
  * [outputs, 2]
  * (inputs)
@@ -39,12 +43,20 @@
  *	 [msg, msglen]
  * }
  * !
+ * [received, 8]
+ * [verify1pos, 8]
+ * [verify2pos, 8]
+ * [confirm1pos, 8]
+ * [confirm2pos, 8]
+ * [confirm3pos, 8]
  * [confirm1, 32]
  * [confirm2, 32]
  * [confirm3, 32]
  * (inputs)
  * {
  *	 [next, 32]
+ *	 [prevpos, 8]
+ *	 [nextpos, 8]
  *	 [siglen, 2]
  *	 [sig, siglen]
  * }
@@ -60,6 +72,12 @@ Transaction::Transaction()
 	finalized = false;
 	valid = true;
 	pos = 0;
+
+	verifies_pos[0] = 0;
+	verifies_pos[1] = 0;
+	confirms_pos[0] = 0;
+	confirms_pos[1] = 0;
+	confirms_pos[2] = 0;
 }
 
 Transaction::Transaction(Transaction& t)
@@ -71,6 +89,7 @@ Transaction::Transaction(Transaction& t)
 	confirmed = t.confirmed;
 	finalized = t.finalized;
 	valid = t.valid;
+	txnoise = t.txnoise;
 	txid = t.txid;
 
 	verifies[0] = t.verifies[0];
@@ -79,16 +98,20 @@ Transaction::Transaction(Transaction& t)
 	confirms[1] = t.confirms[1];
 	confirms[2] = t.confirms[2];
 
+	verifies_pos[0] = t.verifies_pos[0];
+	verifies_pos[1] = t.verifies_pos[1];
+	confirms_pos[0] = t.confirms_pos[0];
+	confirms_pos[1] = t.confirms_pos[1];
+	confirms_pos[2] = t.confirms_pos[2];
+
 	inputs_new = std::list<Transaction::InputNew>(t.inputs_new);
 	inputs = std::list<Transaction::Input>(t.inputs);
 	outputs = std::list<Transaction::Output>(t.outputs);
 }
 
-Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos)
+Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos, bool trusted)
 {
 	pos = txpos;
-	received = get_micros();
-	created = received;
 	verified = false;
 	confirmed = false;
 	finalized = true;
@@ -101,19 +124,20 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 	}
 
 	created = get_netul(bytes);
-	txid = std::string(bytes + 8, 32);
-	pos = get_id_data(bytes + 8);
+	txnoise = std::string(bytes + 8, 32);
+	txid = std::string(bytes + 40, 32);
+	pos = get_id_data(bytes + 40);
 
-	verifies[0] = std::string(bytes + 40, 32);
-	verifies[1] = std::string(bytes + 72, 32);
+	verifies[0] = std::string(bytes + 72, 64);
+	verifies[1] = std::string(bytes + 136, 64);
 	
 	const char* end = bytes + len;
 	
-	int inputs_len = get_netus(bytes + 104);
-	int outputs_len = get_netus(bytes + 106);
+	int inputs_len = get_netus(bytes + 200);
+	int outputs_len = get_netus(bytes + 202);
 
-	bytes += 108;
-	len -= 108;
+	bytes += 204;
+	len -= 204;
 
 	// add the inputs
 	for(int i = 0; i < inputs_len; i++)
@@ -160,24 +184,50 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 		bytes += c;
 		len -= c;
 	}
-	
-	confirms[0] = std::string(bytes, 32);
-	confirms[1] = std::string(bytes + 32, 32);
-	confirms[2] = std::string(bytes + 64, 32);
 
-	bytes += 96;
-	len -= 96;
+	// get true positions and timestamps if from
+	// a trusted source, like directly from the database
+	if(trusted)
+	{
+		received = get_netul(bytes);
+
+		verifies_pos[0] = get_netul(bytes + 8);
+		verifies_pos[1] = get_netul(bytes + 16);
+		confirms_pos[0] = get_netul(bytes + 24);
+		confirms_pos[1] = get_netul(bytes + 32);
+		confirms_pos[2] = get_netul(bytes + 40);
+	}
+
+	else
+	{
+		received = get_micros();
+
+		verifies_pos[0] = -1;
+		verifies_pos[1] = -1;
+		confirms_pos[0] = -1;
+		confirms_pos[1] = -1;
+		confirms_pos[2] = -1;
+	}
+	
+	confirms[0] = std::string(bytes + 48, 32);
+	confirms[1] = std::string(bytes + 80, 32);
+	confirms[2] = std::string(bytes + 112, 32);
+
+	bytes += 144;
+	len -= 144;
 
 	// add the inputs signatures and next ids
 	for(Transaction::Input& input : inputs)
 	{
-		uint16_t o = get_netus(bytes + 32);
+		uint16_t o = get_netus(bytes + 48);
 
 		input.next = std::string(bytes, 32);
-		input.sig = std::string(bytes + 34, o);
+		input.prevpos = get_netul(bytes + 32);
+		input.nextpos = get_netul(bytes + 40);
+		input.sig = std::string(bytes + 50, o);
 
-		bytes += 34 + o;
-		len -= 34 + o;
+		bytes += 50 + o;
+		len -= 50 + o;
 	}
 
 	// send back how many bytes were read
@@ -254,8 +304,6 @@ int Transaction::has_address(std::string address)
 	return count;
 }
 
-#include <iostream>
-
 const char* Transaction::get_errors()
 {
 	if(!this->valid)
@@ -268,124 +316,121 @@ const char* Transaction::get_errors()
 		return "finalized flag not set";
 	}
 
-	if(pos > 1)
+	uint64_t total_in = 0;
+	uint64_t total_out = 0;
+	
+	// calculate total in
+	for(Transaction::Input& input : inputs)
 	{
-		uint64_t total_in = 0;
-		uint64_t total_out = 0;
-	
-		// calculate total in
-		for(Transaction::Input& input : inputs)
+		if(has_address(input.address) != 1)
 		{
-			if(has_address(input.address) != 1)
-			{
-				return "cannot have any address duplicates";
-			}
+			return "cannot have any address duplicates";
+		}
 	
-			if(input.next == txid || input.prev == txid)
-			{
-				return "next/prev cannot reference itself";
-			}
+		if(input.next == txid || input.prev == txid)
+		{
+			return "next/prev cannot reference itself";
+		}
 
-			uint64_t balance = 0;
-			Transaction* prev = web::get_transaction(input.prev);
+		uint64_t balance = 0;
+		Transaction* prev = web::get_transaction(input.prev);
 
-			// get the last transactions balance
-			if(prev != nullptr)
+		// get the last transactions balance
+		if(prev != nullptr)
+		{
+			for(Transaction::Input& in : prev->inputs)
 			{
-				for(Transaction::Input& in : prev->inputs)
+				if(in.address == input.address)
 				{
-					if(in.address == input.address)
-					{
-						balance = in.balance;
-						break;
-					}
+					balance = in.balance;
+					break;
+				}
+			}
+		}
+
+		// add all unconfirmed balance
+		for(std::string& source_txid : input.sources)
+		{
+			Transaction* source = web::get_transaction(source_txid);
+
+			for(Transaction::Output& out : source->outputs)
+			{
+				if(out.address == input.address)
+				{
+					balance += out.amount;
 				}
 			}
 
-			// add all unconfirmed balance
-			for(std::string source_txid : input.sources)
-			{
-				Transaction* source = web::get_transaction(source_txid);
-
-				for(Transaction::Output& out : source->outputs)
-				{
-					if(out.address == input.address)
-					{
-						balance += out.amount;
-					}
-				}
-
-				delete source;
-			}
-
-			if(input.balance > balance)
-			{
-				delete prev;
-				std::cout << "input.balance = " << input.balance << ", balance = " << balance << std::endl;
-				return "invalid input balance";
-			}
-
-			total_in += balance - input.balance;
+			delete source;
 		}
-	
-		// calculate total out
-		for(Transaction::Output& output : outputs)
+
+		if(input.balance > balance)
 		{
-			total_out += output.amount;
-			
-			if(has_address(output.address) != 1)
-			{
-				return "cannot have any address duplicates";
-			}
+			delete prev;
+			return "invalid input balance";
 		}
+
+		total_in += balance - input.balance;
+	}
 	
-		// cant transfer zero coins
-		if(total_out == 0)
-		{
-			return "cannot transfer zero coins";
-		}
-	
-		// total in/out mismatch
-		if(total_in != total_out)
-		{
-			return "total in does not match total out";
-		}
-	
-		// check confirms and verifies for duplicates or self references
+	// calculate total out
+	for(Transaction::Output& output : outputs)
+	{
+		total_out += output.amount;
 		
-		for(int i = 0; i < 5; i++)
+		if(has_address(output.address) != 1)
 		{
-			std::string id_i = i < 3 ? verifies[i] : confirms[i-2];
-			int count = 0;
-	
-			if(is_id_unset(id_i))
-			{
-				continue;
-			}
-	
-			if(id_i == txid)
-			{
-				return "verify/confirm id cannot reference itself";
-			}
-	
-			for(int j = 0; j < 5; j++)
-			{
-				std::string id_j = j < 3 ? verifies[j] : confirms[j-2];
-	
-				if(id_i == id_j)
-				{
-					count += 1;
-				}
-			}
-	
-			if(count > 1)
-			{
-				return "verify/confirm id contains duplicates";
-			}
+			return "cannot have any address duplicates";
 		}
 	}
+	
+	// cant transfer zero coins
+	if(total_out == 0)
+	{
+		return "cannot transfer zero coins";
+	}
+	
+	// total in/out mismatch
+	if(total_in != total_out)
+	{
+		return "total in does not match total out";
+	}
+	
+	// check confirms and verifies for duplicates or self references
+	
+	for(int i = 0; i < 5; i++)
+	{
+		std::string id_i = i < 3 ? verifies[i] : confirms[i-2];
+		int count = 0;
+	
+		if(is_id_unset(id_i))
+		{
+			continue;
+		}
+	
+		if(id_i == txid)
+		{
+			return "verify/confirm id cannot reference itself";
+		}
+	
+		for(int j = 0; j < 5; j++)
+		{
+			std::string id_j = j < 3 ? verifies[j] : confirms[j-2];
+	
+			if(id_i == id_j)
+			{
+				count += 1;
+			}
+		}
+	
+		if(count > 1)
+		{
+			return "verify/confirm id contains duplicates";
+		}
+	}
+	
 
-	// check for invalid signatures and file sizes
+	// check for invalid txid
 	
 	size_t tx_len = serialize_t_len();
 
@@ -398,10 +443,40 @@ const char* Transaction::get_errors()
 	char* tx = new char[tx_len];
 	serialize_t(tx);
 
-	char digest_c[32];
-	SHA256((unsigned char*)tx, tx_len, (unsigned char*)digest_c);
+	// get hash without txid
+	char txid_c[32];
+	memcpy(txid_c, tx + 40, 32);
+	memset(tx + 40, 0, 32);
 
+	char digest_c[32];
+	SHA256((uint8_t*)tx, tx_len, (uint8_t*)digest_c);
+	
+	if(		digest_c[0] != txid_c[0] ||
+			digest_c[1] != txid_c[1] ||
+			digest_c[2] != txid_c[2] ||
+			digest_c[4] != txid_c[4] ||
+			digest_c[5] != txid_c[5] ||
+			digest_c[6] != txid_c[6] ||
+			digest_c[8] != txid_c[8] ||
+			digest_c[9] != txid_c[9] ||
+			digest_c[10] != txid_c[10] ||
+			digest_c[12] != txid_c[12] ||
+			digest_c[13] != txid_c[13] ||
+			digest_c[14] != txid_c[14])
+	{
+		delete[] tx;
+		return "invalid txid";
+	}
+
+	memcpy(tx + 40, txid_c, 32);
+	SHA256((uint8_t*)tx, tx_len, (uint8_t*)digest_c);
+	
 	delete[] tx;
+
+	if(digest_c[0] != 0x00 || digest_c[1] != 0x00 || digest_c[2] != 0x00)
+	{
+		return "not enough work";
+	}
 
 	std::string digest(digest_c, 32);
 
@@ -452,26 +527,26 @@ size_t Transaction::serialize_t_len()
 		len_outputs += output.msg.length() + 30;
 	}
 
-	return 108 + len_inputs + len_outputs;
+	return 204 + len_inputs + len_outputs;
 }
 
 char* Transaction::serialize_t(char* data)
 {
 	put_netul(data, created);
 	
-	memcpy(data + 8, txid.c_str(), 32);
-	memcpy_if(data + 40, verifies[0].c_str(), '\0', 32, verifies[0].length() == 32);
-	memcpy_if(data + 72, verifies[1].c_str(), '\0', 32, verifies[1].length() == 32);
+	memcpy(data + 8, txnoise.c_str(), 32);
+	memcpy(data + 40, txid.c_str(), 32);
+	memcpy_if(data + 72, verifies[0].c_str(), '\0', 64, verifies[0].length() == 64);
+	memcpy_if(data + 136, verifies[1].c_str(), '\0', 64, verifies[1].length() == 64);
 
-	put_netus(data + 106, outputs.size());
-	data[105] = outputs.size();
+	put_netus(data + 202, outputs.size());
 
 	// write finalized inputs
 	
 	if(finalized)
 	{
-		put_netus(data + 104, inputs.size());
-		data += 108;
+		put_netus(data + 200, inputs.size());
+		data += 204;
 		
 		for(Transaction::Input& input : inputs)
 		{
@@ -494,8 +569,8 @@ char* Transaction::serialize_t(char* data)
 
 	else
 	{
-		put_netus(data + 104, inputs_new.size());
-		data += 108;
+		put_netus(data + 200, inputs_new.size());
+		data += 204;
 
 		for(Transaction::InputNew& input : inputs_new)
 		{
@@ -542,11 +617,11 @@ size_t Transaction::serialize_len()
 {
 	finalize();
 	
-	size_t len = serialize_t_len() + 96;
+	size_t len = serialize_t_len() + 144;
 
 	for(Transaction::Input& input : inputs)
 	{
-		len += 34 + input.sig.length();
+		len += 50 + input.sig.length();
 	}
 
 	return len;
@@ -558,23 +633,67 @@ char* Transaction::serialize(char* data)
 	
 	data = serialize_t(data);
 
-	memcpy_if(data, confirms[0].c_str(), '\0', 32, confirms[0].length() == 32);
-	memcpy_if(data + 32, confirms[1].c_str(), '\0', 32, confirms[1].length() == 32);
-	memcpy_if(data + 64, confirms[2].c_str(), '\0', 32, confirms[2].length() == 32);
+	put_netul(data, received);
+	put_netul(data + 8, verifies_pos[0]);
+	put_netul(data + 16, verifies_pos[1]);
+	put_netul(data + 24, confirms_pos[0]);
+	put_netul(data + 32, confirms_pos[1]);
+	put_netul(data + 40, confirms_pos[2]);
+
+	memcpy_if(data + 48, confirms[0].c_str(), '\0', 32, confirms[0].length() == 32);
+	memcpy_if(data + 80, confirms[1].c_str(), '\0', 32, confirms[1].length() == 32);
+	memcpy_if(data + 112, confirms[2].c_str(), '\0', 32, confirms[2].length() == 32);
 	
-	data += 96;
+	data += 144;
 
 	for(Transaction::Input& input : inputs)
 	{
 		uint16_t sig_len = input.sig.length() & 65535;
 
 		memcpy_if(data, input.next.c_str(), '\0', 32, input.next.length() == 32);
-		put_netus(data + 32, sig_len);
-		memcpy(data + 34, input.sig.c_str(), sig_len);
-		data += 34 + sig_len;
+		put_netul(data + 32, input.prevpos);
+		put_netul(data + 40, input.nextpos);
+		put_netus(data + 48, sig_len);
+		memcpy(data + 50, input.sig.c_str(), sig_len);
+		data += 50 + sig_len;
 	}
 
 	return data;
+}
+
+void Transaction::finalize_worker(bool* running, bool* status, uint64_t pos, char* tx, size_t txlen)
+{
+	// generate the txid
+	
+	char txhash_c[32];
+	
+	RAND_bytes((uint8_t*)(tx + 8), 32);
+
+	// only run while other threads are running
+	while(*running)
+	{
+		// set these to generate a unique txid
+		uint64_t created = get_micros();
+		put_netul(tx, created);
+		memset(tx + 40, 0, 32);
+
+		// generate the txid
+		SHA256((uint8_t*)tx, txlen, (uint8_t*)(tx + 40));
+		set_id_data(tx + 40, pos);
+
+		// check if enough work has been done
+		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
+
+		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00 && txhash_c[2] == 0x00)
+		{
+			*running = false;
+			*status = true;
+			break;
+		}
+
+		// try again with new data
+		memcpy(tx + 8, txhash_c, 32);
+	}
 }
 
 void Transaction::finalize()
@@ -585,33 +704,76 @@ void Transaction::finalize()
 		return;
 	}
 
-	// generate the txid
-	
-	char txid_c[32];
+	std::string txhash;
 
-	RAND_bytes((uint8_t*)txid_c, 32);
-	set_id_data(txid_c, pos);
-	txid = std::string(txid_c, 32);
-
-	// get the hash of the transaction not including signatures
-	
-	char txhash_c[32];
-
-	size_t txlen = serialize_t_len();
-	char* tx = new char[txlen];
-
-	serialize_t(tx);
-
-	SHA256((unsigned char*)tx, txlen, (unsigned char*)txhash_c);
-
-	while(txhash_c[0] != 0)
+	// do proof of work on multiple threads
 	{
-		
+		size_t txlen = serialize_t_len();
+		char* tx = new char[txlen];
+
+		if(pos > 1)
+		{
+			Transaction *t1, *t2;
+
+			web::get_edge_nodes(t1, t2);
+
+			verifies[0] = t1->txid;
+			verifies[1] = t2->txid;
+		}
+
+		serialize_t(tx);
+
+		std::thread* workers = new std::thread[config::workers];
+		char* txbucket = new char[txlen * config::workers];
+		bool* status = new bool[config::workers];
+		bool running = true;
+
+		// start all the workers
+		for(int i = 0; i < config::workers; i++)
+		{
+			memcpy(txbucket + i * txlen, tx, txlen);
+
+			status[i] = false;
+			workers[i] = std::thread(&Transaction::finalize_worker, &running, &status[i], pos, &txbucket[i * txlen], txlen);
+		}
+
+		// sleep until done
+		while(running)
+		{
+			usleep(1000);
+		}
+
+		// wait until all the workers are closed
+		for(int i = 0; i < config::workers; i++)
+		{
+			workers[i].join();
+		}
+
+		delete[] tx;
+
+		// find the good transaction bucket
+		for(int i = 0; i < config::workers; i++)
+		{
+			if(status[i])
+			{
+				tx = &txbucket[i * txlen];
+				break;
+			}
+		}
+
+		// set the generated data
+		created = get_netul(tx);
+		txnoise = std::string(tx + 8, 32);
+		txid = std::string(tx + 40, 32);
+
+		char txhash_c[32];
+		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
+		txhash = std::string(txhash_c, 32);
+
+		delete[] txbucket;
+		delete[] status;
+		delete[] workers;
 	}
-
-	std::string txhash(txhash_c, 32);
-
-	delete[] tx;
 
 	// convert all new inputs into inputs
 	for(Transaction::InputNew& input_new : inputs_new)
@@ -625,11 +787,37 @@ void Transaction::finalize()
 		input.address = input_new.address;
 		input.next = input_new.next;
 		input.prev = input_new.prev;
+		input.nextpos = -1;
+		input.prevpos = -1;
 
 		inputs.push_back(input);
 	}
 	
 	finalized = true;
+}
+
+void Transaction::optimize()
+{
+	// find real positions of transactions
+	if(verifies_pos[0] == -1 && verifies[0].length() == 64)
+			verifies_pos[0] = web::get_transaction_pos(verifies[0].c_str());
+	if(verifies_pos[1] == -1 && verifies[1].length() == 64)
+			verifies_pos[1] = web::get_transaction_pos(verifies[1].c_str());
+	if(confirms_pos[0] == -1 && !is_id_unset(confirms[0]))
+			confirms_pos[0] = web::get_transaction_pos(confirms[0].c_str());
+	if(confirms_pos[1] == -1 && !is_id_unset(confirms[1]))
+			confirms_pos[1] = web::get_transaction_pos(confirms[1].c_str());
+	if(confirms_pos[2] == -1 && !is_id_unset(confirms[2]))
+			confirms_pos[2] = web::get_transaction_pos(confirms[2].c_str());
+
+	// find real positions of prev and next
+	for(Transaction::Input& in : inputs)
+	{
+		if(in.prevpos == -1 && !is_id_unset(in.prev))
+				in.prevpos = web::get_transaction_pos(in.prev.c_str());
+		if(in.nextpos == -1 && !is_id_unset(in.next))
+				in.nextpos = web::get_transaction_pos(in.next.c_str());
+	}	
 }
 
 std::string Transaction::get_txid()
@@ -641,10 +829,10 @@ std::string Transaction::get_hash()
 {
 	char txhash_c[32];
 
-	size_t txlen = serialize_len();
+	size_t txlen = serialize_t_len();
 	char* tx = new char[txlen];
 
-	serialize(tx);
+	serialize_t(tx);
 	SHA256((unsigned char*)tx, txlen, (unsigned char*)txhash_c);
 
 	std::string txhash(txhash_c, 32);
@@ -719,7 +907,9 @@ Json::Value Transaction::to_json()
 	const char* error = get_errors();
 	Json::Value root;
 
-	if(!is_id_unset) root["txid"] = to_hex(txid);
+	if(!is_id_unset(txid)) root["txid"] = to_hex(txid);
+	if(!is_id_unset(txnoise)) root["txnoise"] = to_hex(txnoise);
+	if(!is_id_unset(txid)) root["txhash"] = to_hex(get_hash());
 	root["created"] = std::to_string(created);
 	root["received"] = std::to_string(received);
 	root["total"] = std::to_string(get_total());
@@ -732,9 +922,9 @@ Json::Value Transaction::to_json()
 
 	for(int i = 0; i < 2; i++)
 	{
-		if(!is_id_unset(verifies[i]))
+		if(!is_id_unset(verifies[i].substr(0, 32)))
 		{
-			root["verifies"][at] = verifies[i];
+			root["verifies"][at] = to_hex(verifies[i]);
 			at += 1;
 		}
 	}
@@ -745,7 +935,7 @@ Json::Value Transaction::to_json()
 	{
 		if(!is_id_unset(confirms[i]))
 		{
-			root["confirms"][at] = confirms[i];
+			root["confirms"][at] = to_hex(confirms[i]);
 			at += 1;
 		}
 	}
@@ -834,6 +1024,8 @@ std::string Transaction::to_string(int indent)
 	
 	std::string out = calc_indent(indent)+"Transaction (" +
 			"\n"+calc_indent(indent+1)+"txid = " + (is_id_unset(txid) ? "unset" : to_hex(txid)) +
+			"\n"+calc_indent(indent+1)+"txnoise = " + (is_id_unset(txnoise) ? "unset" : to_hex(txnoise)) +
+			"\n"+calc_indent(indent+1)+"txhash = " + (is_id_unset(txid) ? "unset" : to_hex(get_hash())) +
 			"\n"+calc_indent(indent+1)+"created = " + std::to_string(created) + 
 			"\n"+calc_indent(indent+1)+"received = " + std::to_string(received) +
 			"\n"+calc_indent(indent+1)+"total = " + display_coins(get_total()) +
@@ -844,7 +1036,7 @@ std::string Transaction::to_string(int indent)
 
 	for(int i = 0; i < 2; i++)
 	{
-		if(!is_id_unset(verifies[i]))
+		if(!is_id_unset(verifies[i].substr(0, 32)))
 		{
 			out += "\n"+calc_indent(indent+2)+to_hex(verifies[i]);
 		}
@@ -995,5 +1187,20 @@ bool Transaction::add_confirm(std::string id)
 	}
 
 	return false;
+}
+
+int Transaction::count_confirms()
+{
+	int c = 0;
+
+	for(int i = 0; i < 3; i++)
+	{
+		if(!is_id_unset(confirms[i]))
+		{
+			c += 1;
+		}
+	}
+
+	return c;
 }
 

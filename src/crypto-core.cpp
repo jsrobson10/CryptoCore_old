@@ -40,6 +40,8 @@ int main(int cargs, const char** vargs)
 	int peer_port = 0;
 	std::string peer_ip;
 
+	config::load();
+
 	for(int i = 1; i < cargs; i++)
 	{
 		try
@@ -97,8 +99,6 @@ int main(int cargs, const char** vargs)
 
 	signal(SIGPIPE, SIG_IGN);
 
-	config::load();
-
 	web::init();
 	network::init(port);
 	http::init(http_port);
@@ -109,6 +109,7 @@ int main(int cargs, const char** vargs)
 	}
 
 	int c = 0;
+	uint64_t cycle = 0;
 
 	for(;;)
 	{
@@ -116,6 +117,13 @@ int main(int cargs, const char** vargs)
 
 		network::update();
 		http::update();
+
+		if(cycle % 1000 == 0)
+		{
+			web::update();
+		}
+
+		cycle += 1;
 	}
 
 	web::cleanup();

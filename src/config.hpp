@@ -9,4 +9,5 @@ namespace config
 	void generate();
 
 	extern std::string http_auth;
+	extern int workers;
 };

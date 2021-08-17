@@ -23,7 +23,7 @@ class Transaction
 public:
 
 	Transaction();
-	Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos);
+	Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos, bool trusted);
 	Transaction(Transaction& t);
 
 	const char* get_errors();
@@ -38,6 +38,9 @@ public:
 	void set_verified();
 
 	void finalize();
+	void optimize();
+
+	static void finalize_worker(bool* running, bool* status, uint64_t pos, char* tx, size_t txlen);
 
 	std::string to_string(int indent);
 	Json::Value to_json();
@@ -71,6 +74,7 @@ public:
 	void set_pos(uint64_t pos);
 
 	bool add_confirm(std::string id);
+	int count_confirms();
 
 	struct InputNew
 	{
@@ -89,6 +93,8 @@ public:
 		std::string address;
 		std::string prev;
 		std::string next;
+		uint64_t prevpos;
+		uint64_t nextpos;
 		std::list<std::string> sources;
 		uint64_t balance;
 	};
@@ -111,8 +117,12 @@ public:
 
 	std::string verifies[2];
 	std::string confirms[3];
+	
+	uint64_t verifies_pos[2];
+	uint64_t confirms_pos[3];
 
 	std::string txid;
+	std::string txnoise;
 	std::list<InputNew> inputs_new;
 	std::list<Input> inputs;
 	std::list<Output> outputs;

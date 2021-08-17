@@ -253,7 +253,7 @@ void network::handleConnection(BdfSock<network::Client>* connection)
 
 			nl->get("data")->getByteArray(&data, &len);
 
-			Transaction* t = new Transaction(data, len, nullptr, nullptr, 0);
+			Transaction* t = new Transaction(data, len, nullptr, nullptr, 0, false);
 			
 			int result = control.process_new_transaction(t);
 

@@ -50,6 +50,7 @@ namespace http
 			{"getaddress", "get information about an address, like the latest transaction and its balance", "{\"address\": address} OR /getaddress/<address>"},
 			{"listoutputs", "find every time a transaction has been made to an address", "{\"address\": address, \"last\": last, \"limit\": limit} OR /listoutputs/<address>"},
 			{"send", "generate a transaction and send funds from at least 1 wallet to at least 1 address", "{\"inputs\": [{\"prikey\": prikey, \"amount\": amount}...], \"outputs\": [{\"address\", address, \"amount\": amount}...]}"},
+			{"getedgenodes", "get all current edge nodes", ""},
 	};
 
 	
@@ -381,6 +382,20 @@ Json::Value http::handle_req(Request* req, std::string at)
 			v["tx"] = tx->to_json();
 
 			delete tx;
+		}
+
+		return v;
+	}
+
+	else if(at == "getedgenodes")
+	{
+		Json::Value v;
+		int i = 0;
+
+		for(Transaction* tx : web::edge_nodes)
+		{
+			v[i] = tx->to_json();
+			i += 1;
 		}
 
 		return v;
