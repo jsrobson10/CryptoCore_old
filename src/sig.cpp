@@ -16,6 +16,27 @@ std::string sig::generate()
 	return prikey_s;
 }
 
+std::string sig::generate_seed()
+{
+	uint8_t seed[48];
+
+	RAND_bytes(seed, sizeof(seed));
+
+	return std::string(seed, sizeof(seed));
+}
+
+std::string sig::generate(std::string seed)
+{
+	uint8_t* prikey = new uint8_t[SIG_LEN_PRIKEY];
+	
+	OQS_SIG_falcon_1024_keypair_seed(prikey + 2305, prikey, seed.c_str(), seed.length());
+
+	std::string prikey_s((char*)prikey, SIG_LEN_PRIKEY);
+
+	delete[] prikey;
+	return prikey_s;
+}
+
 std::string sig::sign(std::string prikey, std::string message)
 {
 	uint8_t* sig = new uint8_t[SIG_LEN];

@@ -72,6 +72,8 @@ Transaction* web::get_transaction(const char* txid)
 {
 	uint64_t txpos = get_transaction_pos(txid);
 
+	std::cout << "txpos is " << txpos << std::endl;
+
 	if(txpos != -1)
 	{
 		return get_transaction(txpos);
@@ -85,11 +87,13 @@ Transaction* web::get_transaction(const char* txid)
 
 uint64_t web::get_transaction_pos(const char* txid)
 {
-	uint128_t bpos = get_id_data(txid);
+	uint64_t bpos = get_id_data(txid);
 	uint64_t date_start = 0;
 
-	uint128_t chpos = bpos * 16;
+	uint128_t chpos = (uint128_t)bpos * 16;
 	uint128_t chlen = chain->get_len();
+
+	std::cout << "chpos is " << display_unsigned_e(chpos) << std::endl;
 
 	// search forwards
 	while(chpos < chlen)
@@ -100,6 +104,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 		uint128_t txpos = chain->read_netue();
 		transactions->begin(txpos);
 
+		std::cout << "txpos2 is " << display_unsigned_e(txpos) << std::endl;
+
 		uint32_t txlen = transactions->read_netui();
 		uint64_t txdate = transactions->read_netul();
 		char tx_txid[32];
@@ -109,7 +115,9 @@ uint64_t web::get_transaction_pos(const char* txid)
 
 		if(bytes_are_equal(tx_txid, txid, 32))
 		{
-			return chpos / 16;
+			std::cout << "a: " << display_unsigned_e(chpos) << std::endl;
+
+			return (chpos - 16) / 16;
 		}
 
 		if(date_start == 0)
@@ -127,6 +135,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 	// cannot search back if already at the start
 	if(bpos == 0)
 	{
+		std::cout << "b\n";
+
 		return -1;
 	}
 
@@ -150,7 +160,9 @@ uint64_t web::get_transaction_pos(const char* txid)
 
 		if(bytes_are_equal(tx_txid, txid, 32))
 		{
-			return chpos / 16;
+			std::cout << "c\n";
+
+			return (chpos - 16) / 16;
 		}
 
 		// outside the scope of 1 minute
@@ -165,6 +177,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 			break;
 		}
 	}
+
+	std::cout << "d\n";
 
 	return -1;
 }

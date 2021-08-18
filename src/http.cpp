@@ -44,7 +44,7 @@ namespace http
 			{"help", "display this help message", ""},
 			{"auth", "login to this service and set the cookie", "{\"auth\": key}"},
 			{"logout", "delete your authentication cookie and log out", ""},
-			{"generatewallet", "generate a new wallet along with the private key, public key, and wallet address", ""},
+			{"generatewallet", "generate a new wallet along with the private key, public key, and wallet address", "/generatewallet/<seed?> OR {\"seed\": seed}"},
 			{"getwallet", "get a wallets other details from its private key", "{\"prikey\": prikey} OR /getwallet/<prikey>"},
 			{"gettransaction", "get a given transaction by its transaction ID", "{\"txid\": txid} OR /gettransaction/<txid>"},
 			{"getaddress", "get information about an address, like the latest transaction and its balance", "{\"address\": address} OR /getaddress/<address>"},

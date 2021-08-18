@@ -304,6 +304,8 @@ int Transaction::has_address(std::string address)
 	return count;
 }
 
+#include <iostream>
+
 const char* Transaction::get_errors()
 {
 	if(!this->valid)
@@ -346,6 +348,11 @@ const char* Transaction::get_errors()
 					break;
 				}
 			}
+		}
+
+		else 
+		{
+			std::cout << "prev is null\n";
 		}
 
 		// add all unconfirmed balance
@@ -393,6 +400,8 @@ const char* Transaction::get_errors()
 	// total in/out mismatch
 	if(total_in != total_out)
 	{
+		std::cout << "total in: " << total_in << ", total out: " << total_out << std::endl;
+
 		return "total in does not match total out";
 	}
 	
@@ -473,7 +482,7 @@ const char* Transaction::get_errors()
 	
 	delete[] tx;
 
-	if(digest_c[0] != 0x00 || digest_c[1] != 0x00 || digest_c[2] != 0x00)
+	if(digest_c[0] != 0x00 || digest_c[1] != 0x00/* || digest_c[2] != 0x00*/)
 	{
 		return "not enough work";
 	}
@@ -684,7 +693,7 @@ void Transaction::finalize_worker(bool* running, bool* status, uint64_t pos, cha
 		// check if enough work has been done
 		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
 
-		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00 && txhash_c[2] == 0x00)
+		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00/* && txhash_c[2] == 0x00*/)
 		{
 			*running = false;
 			*status = true;
