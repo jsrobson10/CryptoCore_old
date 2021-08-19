@@ -6,6 +6,7 @@
 #include "sig.hpp"
 #include "address.hpp"
 #include "config.hpp"
+#include "base58.hpp"
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -44,15 +45,16 @@ namespace http
 			{"help", "display this help message", ""},
 			{"auth", "login to this service and set the cookie", "{\"auth\": key}"},
 			{"logout", "delete your authentication cookie and log out", ""},
-			{"generatewallet", "generate a new wallet along with the private key, public key, and wallet address", "/generatewallet/<seed?> OR {\"seed\": seed}"},
+			{"generatewallet", "generate a new wallet along with the private key, public key, and wallet address", "{\"seed\": seed} OR /generatewallet"},
 			{"getwallet", "get a wallets other details from its private key", "{\"prikey\": prikey} OR /getwallet/<prikey>"},
 			{"gettransaction", "get a given transaction by its transaction ID", "{\"txid\": txid} OR /gettransaction/<txid>"},
 			{"getaddress", "get information about an address, like the latest transaction and its balance", "{\"address\": address} OR /getaddress/<address>"},
 			{"listoutputs", "find every time a transaction has been made to an address", "{\"address\": address, \"last\": last, \"limit\": limit} OR /listoutputs/<address>"},
 			{"send", "generate a transaction and send funds from at least 1 wallet to at least 1 address", "{\"inputs\": [{\"prikey\": prikey, \"amount\": amount}...], \"outputs\": [{\"address\", address, \"amount\": amount}...]}"},
 			{"getedgenodes", "get all current edge nodes", ""},
+			{"getrawtransaction", "get a given raw transaction by its transaction ID", "{\"txid\": txid} OR /getrawtransaction/<txid>"},
+			{"decoderawtransaction", "decode a given raw transaction", "{\"transaction\": transaction}"},
 	};
-
 	
 	void run();
 };
@@ -201,13 +203,27 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 	else if(at == "generatewallet")
 	{
-		std::string prikey = sig::generate();
+		std::string seed_j = req->value["seed"].asString();
+		std::string seed;
+
+		// generate the wallet from a seed if specified
+		if(seed_j.length() > 0)
+		{
+			seed = sig::seed_generate(seed_j);
+		}
+
+		else
+		{
+			seed = sig::seed_generate();
+		}
+
+		std::string prikey = sig::generate(seed);
 		std::string pubkey = sig::getpubkey(prikey);
 		std::string address = address::frompubkey(pubkey);
 
 		Json::Value value;
 
-		value["prikey"] = to_hex(prikey);
+		value["prikey"] = base58::encode(seed);
 		value["pubkey"] = to_hex(pubkey);
 		value["address"] = address::fromhash(address);
 
@@ -216,19 +232,19 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 	else if(at == "getwallet")
 	{
-		std::string prikey;
+		std::string seed;
 
 		if(req->pathc >= 2)
 		{
-			prikey = from_hex(req->pathv[1]);
+			seed = req->pathv[1];
 		}
 
 		else
 		{
-			prikey = from_hex(req->value["prikey"].asString());
+			seed = req->value["prikey"].asString();
 		}
 
-		if(prikey.length() != SIG_LEN_PRIKEY)
+		if(seed.length() != 55)
 		{
 			Json::Value v;
 			v["error"] = "invalid prikey";
@@ -236,12 +252,23 @@ Json::Value http::handle_req(Request* req, std::string at)
 			return v;
 		}
 
+		seed = base58::decode(seed);
+
+		if(!sig::seed_verify(seed))
+		{
+			Json::Value v;
+			v["error"] = "invalid prikey";
+
+			return v;
+		}
+
+		std::string prikey = sig::generate(seed);
 		std::string pubkey = sig::getpubkey(prikey);
 		std::string address = address::frompubkey(pubkey);
 
 		Json::Value value;
 
-		value["prikey"] = to_hex(prikey);
+		value["prikey"] = base58::encode(seed);
 		value["pubkey"] = to_hex(pubkey);
 		value["address"] = address::fromhash(address);
 
@@ -253,7 +280,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 		web::show_all();
 	}
 
-	else if(at == "gettransaction")
+	else if(at == "gettransaction" || at == "getrawtransaction")
 	{
 		std::string txid;
 
@@ -289,9 +316,36 @@ Json::Value http::handle_req(Request* req, std::string at)
 		}
 
 		Json::Value v;
-		v["transaction"] = tx->to_json();
+
+		if(at == "gettransaction")
+		{
+			v["transaction"] = tx->to_json();
+		}
+
+		else
+		{
+			size_t txlen = tx->serialize_len();
+			char* txc = new char[txlen];
+
+			tx->serialize(txc);
+
+			v["transaction"] = to_hex(txc, txlen);
+
+			delete[] txc;
+		}
 
 		delete tx;
+		return v;
+	}
+
+	else if(at == "decoderawtransaction")
+	{
+		std::string txc = from_hex(req->value["transaction"].asString());
+		Transaction tx(txc.c_str(), txc.length(), nullptr, nullptr, 0, true);
+
+		Json::Value v;
+		v["transaction"] = tx.to_json();
+
 		return v;
 	}
 
@@ -427,10 +481,19 @@ Json::Value http::handle_req(Request* req, std::string at)
 		{
 			try
 			{
-				std::string prikey = from_hex(inputs_j[i]["prikey"].asString());
+				std::string prikey = inputs_j[i]["prikey"].asString();
 				uint64_t amount = std::stoul(inputs_j[i]["amount"].asString());
 
-				if(prikey.length() != SIG_LEN_PRIKEY)
+				if(prikey.length() != 55)
+				{
+					Json::Value v;
+					v["error"] = "invalid prikey";
+					return v;
+				}
+
+				prikey = base58::decode(prikey);
+
+				if(!sig::seed_verify(prikey))
 				{
 					Json::Value v;
 					v["error"] = "invalid prikey";
@@ -450,6 +513,8 @@ Json::Value http::handle_req(Request* req, std::string at)
 					v["error"] = "insufficient funds";
 					return v;
 				}
+
+				prikey = sig::generate(prikey);
 
 				uint64_t balance;
 				Transaction* tx;
@@ -559,9 +624,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 			return v;
 		}
 
-		tx_final.finalize();
-
-		web::add_transaction(&tx_final);
+		web::add_transaction(tx_final);
 
 		return tx_final.to_json();
 	}
@@ -908,10 +971,12 @@ void http::Request::run()
 					std::string response = generate_error("invalid json: " + errors);
 					write(sockfd, response.c_str(), response.length());
 
+					delete reader;
 					delete this;
 					return;
 				}
 
+				delete reader;
 				delete[] data;
 			}
 

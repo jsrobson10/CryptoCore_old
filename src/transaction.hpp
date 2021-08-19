@@ -73,7 +73,7 @@ public:
 	void set_verified2(std::string id);
 	void set_pos(uint64_t pos);
 
-	bool add_confirm(std::string id);
+	bool add_confirm(std::string id, uint64_t pos);
 	int count_confirms();
 
 	struct InputNew
@@ -111,7 +111,6 @@ public:
 	uint64_t received;
 
 	bool verified;
-	bool confirmed;
 	bool finalized;
 	bool valid;
 

@@ -68,7 +68,6 @@ Transaction::Transaction()
 	created = get_micros();
 	received = created;
 	verified = true;
-	confirmed = false;
 	finalized = false;
 	valid = true;
 	pos = 0;
@@ -86,7 +85,6 @@ Transaction::Transaction(Transaction& t)
 	verified = t.verified;
 	created = t.created;
 	received = t.received;
-	confirmed = t.confirmed;
 	finalized = t.finalized;
 	valid = t.valid;
 	txnoise = t.txnoise;
@@ -113,7 +111,6 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 {
 	pos = txpos;
 	verified = false;
-	confirmed = false;
 	finalized = true;
 	valid = true;
 
@@ -304,8 +301,6 @@ int Transaction::has_address(std::string address)
 	return count;
 }
 
-#include <iostream>
-
 const char* Transaction::get_errors()
 {
 	if(!this->valid)
@@ -348,11 +343,8 @@ const char* Transaction::get_errors()
 					break;
 				}
 			}
-		}
-
-		else 
-		{
-			std::cout << "prev is null\n";
+			
+			delete prev;
 		}
 
 		// add all unconfirmed balance
@@ -373,7 +365,6 @@ const char* Transaction::get_errors()
 
 		if(input.balance > balance)
 		{
-			delete prev;
 			return "invalid input balance";
 		}
 
@@ -400,8 +391,6 @@ const char* Transaction::get_errors()
 	// total in/out mismatch
 	if(total_in != total_out)
 	{
-		std::cout << "total in: " << total_in << ", total out: " << total_out << std::endl;
-
 		return "total in does not match total out";
 	}
 	
@@ -482,7 +471,7 @@ const char* Transaction::get_errors()
 	
 	delete[] tx;
 
-	if(digest_c[0] != 0x00 || digest_c[1] != 0x00/* || digest_c[2] != 0x00*/)
+	if(digest_c[0] != 0x00 || digest_c[1] != 0x00 || digest_c[2] != 0x00)
 	{
 		return "not enough work";
 	}
@@ -507,7 +496,7 @@ bool Transaction::is_finalized()
 
 bool Transaction::is_confirmed()
 {
-	return this->confirmed;
+	return (count_confirms() > 1);
 }
 
 size_t Transaction::serialize_t_len()
@@ -693,7 +682,7 @@ void Transaction::finalize_worker(bool* running, bool* status, uint64_t pos, cha
 		// check if enough work has been done
 		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
 
-		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00/* && txhash_c[2] == 0x00*/)
+		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00 && txhash_c[2] == 0x00)
 		{
 			*running = false;
 			*status = true;
@@ -712,7 +701,7 @@ void Transaction::finalize()
 	{
 		return;
 	}
-
+	
 	std::string txhash;
 
 	// do proof of work on multiple threads
@@ -726,8 +715,11 @@ void Transaction::finalize()
 
 			web::get_edge_nodes(t1, t2);
 
-			verifies[0] = t1->txid;
-			verifies[1] = t2->txid;
+			verifies[0] = t1->txid + t1->get_hash();
+			verifies[1] = t2->txid + t2->get_hash();
+
+			verifies_pos[0] = t1->pos;
+			verifies_pos[1] = t2->pos;
 		}
 
 		serialize_t(tx);
@@ -1178,7 +1170,7 @@ void Transaction::set_pos(uint64_t pos)
 	this->pos = pos;
 }
 
-bool Transaction::add_confirm(std::string id)
+bool Transaction::add_confirm(std::string id, uint64_t pos)
 {
 	for(int i = 0; i < 3; i++)
 	{
@@ -1190,6 +1182,7 @@ bool Transaction::add_confirm(std::string id)
 		if(is_id_unset(confirms[i]))
 		{
 			confirms[i] = id;
+			confirms_pos[i] = pos;
 
 			return true;
 		}

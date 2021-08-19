@@ -18,7 +18,8 @@ namespace web
 	void get_address_info(std::string address, uint64_t &balance, Transaction*& latest, std::list<Transaction*>& sources_new, uint64_t sources_new_limit);
 	uint64_t find_outputs(std::list<Transaction*>& transactions, std::string find, std::string after, uint64_t limit);
 	uint64_t find_outputs(std::string find, std::string after, std::function<bool (Transaction& tx, Transaction::Output& out)> callback);
-	void add_transaction(Transaction* t);
+	void add_transaction(Transaction& t);
+	void update_transaction(Transaction& t);
 	void get_edge_nodes(Transaction*& node1, Transaction*& node2);
 	void generate_new();
 	void show_all();

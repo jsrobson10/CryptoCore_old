@@ -7,6 +7,8 @@
 #include "transaction.hpp"
 #include "helpers.hpp"
 #include "config.hpp"
+#include "base58.hpp"
+#include "cpu.hpp"
 
 #include <bdf/Bdf.hpp>
 #include <iostream>
@@ -21,7 +23,7 @@
 
 using namespace Bdf;
 
-void display_help(const char** vargs)
+static void display_help(const char** vargs)
 {
 	std::cerr << "Usage: " << vargs[0] << " ...\n";
 	std::cerr << "  --help                  Display this message.\n";
@@ -40,6 +42,7 @@ int main(int cargs, const char** vargs)
 	int peer_port = 0;
 	std::string peer_ip;
 
+	cpu::init();
 	config::load();
 
 	for(int i = 1; i < cargs; i++)
