@@ -14,7 +14,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <list>
+#include <mutex>
 
 #define CACHE_MAX 1024
 
@@ -38,7 +40,7 @@ namespace web
 
 #include "web-constants.hpp"
 
-std::list<Transaction*> edge_nodes;
+std::unordered_map<std::string, Transaction*> edge_nodes;
 
 Database* transactions;
 Database* chain;
@@ -47,19 +49,16 @@ Database* chain;
 
 using namespace web;
 
-Transaction* web::get_transaction(std::string txid)
-{
-	return get_transaction(txid.c_str());
-}
-
 Transaction* web::get_transaction(uint64_t chpos)
 {
 	// search edge nodes first
-	for(Transaction* tx : edge_nodes)
+	for(auto& tx : edge_nodes)
 	{
-		if(tx->pos == chpos)
+		if(tx.second->pos == chpos)
 		{
-			return new Transaction(*tx);
+			Transaction* t = new Transaction(*tx.second);
+
+			return t;
 		}
 	}
 	
@@ -74,24 +73,30 @@ Transaction* web::get_transaction(uint64_t chpos)
 
 	transactions->read(txc, txlen);
 	Transaction* tx = new Transaction(txc, txlen, nullptr, nullptr, txpos, true);
-	
+
 	delete[] txc;
 	return tx;
 }
 
 Transaction* web::get_transaction(const char* txid)
 {
+	return get_transaction(std::string(txid, 32));
+}
+
+Transaction* web::get_transaction(std::string txid)
+{
 	// search edge nodes first
-	for(Transaction* tx : edge_nodes)
+	auto edge_nodes_it = edge_nodes.find(txid);
+
+	if(edge_nodes_it != edge_nodes.end())
 	{
-		if(bytes_are_equal(tx->txid.c_str(), txid, 32))
-		{
-			return new Transaction(*tx);
-		}
+		Transaction* t = new Transaction(*edge_nodes_it->second);
+
+		return t;
 	}
-	
+
 	// search from filesystem
-	uint64_t txpos = get_transaction_pos(txid);
+	uint64_t txpos = get_transaction_pos(txid.c_str());
 
 	if(txpos != -1)
 	{
@@ -106,16 +111,23 @@ Transaction* web::get_transaction(const char* txid)
 
 void web::update_transaction(Transaction& tx)
 {
-	std::cout << "updating txid " << to_hex(tx.txid) << " at pos " << tx.pos << std::endl;
-
 	// check if edge nodes needs updating
+	auto edge_nodes_it = edge_nodes.find(tx.txid);
+
+	if(edge_nodes_it != edge_nodes.end())
+	{
+		delete edge_nodes_it->second;
+
+		edge_nodes_it->second = new Transaction(tx);
+	}
+	
 	for(auto it = edge_nodes.begin(); it != edge_nodes.end(); it++)
 	{
-		if((*it)->pos == tx.pos)
+		if(it->second->pos == tx.pos)
 		{
-			delete *it;
+			delete it->second;
 
-			*it = new Transaction(tx);
+			it->second = new Transaction(tx);
 
 			break;
 		}
@@ -525,7 +537,7 @@ void web::add_transaction(Transaction& t)
 {
 	uint128_t txpos = transactions->get_len();
 	uint128_t chpos = chain->get_len();
-
+	
 	// prepare this transaction to be stored
 	t.set_pos(chpos / 16);
 	t.finalize();
@@ -546,7 +558,7 @@ void web::add_transaction(Transaction& t)
 	transactions->write(tx, txlen);
 	transactions->flush();
 
-	edge_nodes.push_back(new Transaction(t));
+	edge_nodes[t.txid] = new Transaction(t);
 
 	// update previous transactions to point to this one
 	
@@ -561,6 +573,12 @@ void web::add_transaction(Transaction& t)
 		web::update_transaction(*tx_conf);
 
 		delete tx_conf;
+	}
+
+	// inputs
+	for(Transaction::Input& in : t.inputs)
+	{
+//		uint64_t prev_pos = t.
 	}
 
 	delete[] tx;
@@ -669,7 +687,7 @@ void web::init()
 
 			if(tx.count_confirms() < 2)
 			{
-				edge_nodes.push_back(new Transaction(tx));
+				edge_nodes[tx.txid] = new Transaction(tx);
 			}
 
 			// its safe to assume nodes older than a day shouldn't be cached if there's already enough edge nodes here
@@ -692,7 +710,7 @@ void web::update()
 	{
 		for(auto it = edge_nodes.begin(); it != edge_nodes.end(); it++)
 		{
-			Transaction* tx = *it;
+			Transaction* tx = it->second;
 
 			if(now > tx->received + 86400000000L && edge_nodes.size() > 1024)
 			{
@@ -707,7 +725,7 @@ void web::update()
 	// automatically remove confirmed nodes
 	for(auto it = edge_nodes.begin(); it != edge_nodes.end(); it++)
 	{
-		Transaction* tx = *it;
+		Transaction* tx = it->second;
 
 		if(tx->count_confirms() > 2)
 		{
@@ -767,7 +785,7 @@ void web::get_edge_nodes(Transaction*& tx1, Transaction*& tx2)
 		i++;
 	}
 
-	tx1 = *it;
+	tx1 = it->second;
 
 	for(;i < item2;)
 	{
@@ -775,7 +793,7 @@ void web::get_edge_nodes(Transaction*& tx1, Transaction*& tx2)
 		i++;
 	}
 
-	tx2 = *it;
+	tx2 = it->second;
 }
 
 void web::cleanup()

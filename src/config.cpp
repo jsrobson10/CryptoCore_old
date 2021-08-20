@@ -11,6 +11,7 @@
 #include <string>
 
 std::string config::http_auth;
+int config::cache_size;
 int config::workers;
 
 void config::generate()
@@ -23,8 +24,10 @@ void config::generate()
 	RAND_bytes((uint8_t*)http_auth_c, 32);
 	http_auth = to_hex(http_auth_c, 32);
 	workers = std::thread::hardware_concurrency();
+	cache_size = 1048576;
 
 	nl->get("http")->getNamedList()->get("auth")->setString(http_auth);
+	nl->get("cache_size")->setInteger(cache_size);
 	nl->get("workers")->setInteger(workers);
 
 	std::ofstream settings_file("config.hbdf");
@@ -70,8 +73,9 @@ void config::load()
 		http_auth = nl_http->get("auth")->getString();
 		
 		workers = (int)nl->get("workers")->getAutoInt();
+		cache_size = (int)nl->get("cache_size")->getAutoInt();
 
-		if(workers <= 0)
+		if(workers <= 0 || cache_size <= 0)
 		{
 			generate();
 			return;

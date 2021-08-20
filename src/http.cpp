@@ -446,9 +446,9 @@ Json::Value http::handle_req(Request* req, std::string at)
 		Json::Value v;
 		int i = 0;
 
-		for(Transaction* tx : web::edge_nodes)
+		for(auto& tx : web::edge_nodes)
 		{
-			v[i] = tx->to_json();
+			v[i] = tx.second->to_json();
 			i += 1;
 		}
 
@@ -1070,7 +1070,7 @@ void http::Request::run()
 			http::mtx.lock();
 			http::requests.push(this);
 			http::mtx.unlock();
-
+			
 			return;
 		}
 	}

@@ -1,6 +1,8 @@
 
 #include "sig.hpp"
 #include "cpu.hpp"
+#include "config.hpp"
+#include "helpers.hpp"
 
 #include "falcon/falcon1024avx2/api.h"
 #include "falcon/falcon1024int/api.h"
@@ -8,7 +10,21 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
+#include <unordered_map>
+#include <string>
+
 #define SEED_BEGIN_CHAR 0x80
+
+namespace sig
+{
+	struct sig_item
+	{
+		std::string prikey;
+		uint64_t accessed;
+	};
+
+	std::unordered_map<std::string, sig_item> cache;
+};
 
 std::string sig::generate()
 {
@@ -81,6 +97,16 @@ bool sig::seed_verify(std::string seed)
 
 std::string sig::generate(std::string seed)
 {
+	// try to get the prikey from cache first
+	sig_item& si = cache[seed];
+	si.accessed = get_micros();
+	
+	if(si.prikey.length() > 0)
+	{
+		return si.prikey;
+	}
+	
+	// calculate the prikey from the seed
 	uint8_t* prikey = new uint8_t[SIG_LEN_PRIKEY];
 	uint8_t seed_c[32];
 
@@ -100,8 +126,38 @@ std::string sig::generate(std::string seed)
 
 	std::string prikey_s((char*)prikey, SIG_LEN_PRIKEY);
 
+	// add the seed and prikey to cache
+	si.prikey = std::string((char*)prikey, SIG_LEN_PRIKEY);
+	si.accessed = get_micros();
+
 	delete[] prikey;
 	return prikey_s;
+}
+
+void sig::update()
+{
+	// remove the oldest item from cache
+	if(cache.size() > config::cache_size)
+	{
+		std::unordered_map<std::string, sig_item>::iterator worst;
+		uint64_t worst_time = -1;
+
+		for(auto it = cache.begin(); it != cache.end(); it++)
+		{
+			uint64_t accessed = it->second.accessed;
+
+			if(accessed < worst_time)
+			{
+				worst_time = accessed;
+				worst = it;
+			}
+		}
+
+		if(worst_time != -1)
+		{
+			cache.erase(worst);
+		}
+	}
 }
 
 std::string sig::sign(std::string prikey, std::string message)

@@ -1,7 +1,5 @@
-//#define SIG_FALCON1024_avx2_DISABLED
 
-#ifndef FALCON_INNER_H__
-#define FALCON_INNER_H__
+#pragma once
 
 /*
  * Internal functions for Falcon. This is not the API intended to be
@@ -75,6 +73,7 @@
  *    function does nothing, so it can be called systematically.
  */
 
+//#define SIG_FALCON1024_avx2_DISABLED
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -938,5 +937,3 @@ TARGET_AVX2
 int Zf(gaussian0_sampler)(prng *p);
 
 /* ==================================================================== */
-
-#endif

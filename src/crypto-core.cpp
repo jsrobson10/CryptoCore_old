@@ -124,6 +124,7 @@ int main(int cargs, const char** vargs)
 		if(cycle % 1000 == 0)
 		{
 			web::update();
+			sig::update();
 		}
 
 		cycle += 1;

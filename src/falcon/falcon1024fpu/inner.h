@@ -1,7 +1,5 @@
-#define SIG_FALCON1024_fpu_DISABLED
 
-#ifndef FALCON_INNER_H__
-#define FALCON_INNER_H__
+#pragma once
 
 /*
  * Internal functions for Falcon. This is not the API intended to be
@@ -75,6 +73,7 @@
  *    function does nothing, so it can be called systematically.
  */
 
+#define SIG_FALCON1024_fpu_DISABLED
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -916,5 +915,3 @@ int Zf(sampler)(void *ctx, fpr mu, fpr isigma);
 int Zf(gaussian0_sampler)(prng *p);
 
 /* ==================================================================== */
-
-#endif

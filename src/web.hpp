@@ -4,6 +4,7 @@
 #include "transaction.hpp"
 
 #include <list>
+#include <unordered_map>
 #include <functional>
 #include <string>
 #include <list>
@@ -27,5 +28,5 @@ namespace web
 	void update();
 	void init();
 
-	extern std::list<Transaction*> edge_nodes;
+	extern std::unordered_map<std::string, Transaction*> edge_nodes;
 };

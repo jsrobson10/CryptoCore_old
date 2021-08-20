@@ -22,7 +22,7 @@
  * crypto_sign_open() functions not reentrant and not thread-safe, so
  * this should be done only for testing purposes.
  */
-#define TEMPALLOC  static
+#define TEMPALLOC
 
 int
 SIG_FALCON1024_avx2_sign_keypair(unsigned char *pk, unsigned char *sk, unsigned char *seed, unsigned long long seedlen)
