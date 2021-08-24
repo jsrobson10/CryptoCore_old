@@ -14,6 +14,9 @@ namespace http
 		int sockfd;
 		Json::Value value;
 
+		std::thread handle;
+		char buffer[1024];
+
 		int pathc;
 		std::string* pathv;
 		
@@ -22,13 +25,6 @@ namespace http
 		void respond(int status, std::string status_msg, std::string headers, std::string data);
 		void respond(const Json::Value& value);
 		void close();
-	
-	private:
-		
-		std::thread handle;
-		char buffer[102400];
-	
-		void run();
 	};
 
 	std::string generate_error(std::string content);

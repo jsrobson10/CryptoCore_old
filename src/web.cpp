@@ -40,23 +40,40 @@ namespace web
 
 #include "web-constants.hpp"
 
-std::unordered_map<std::string, Transaction*> edge_nodes;
+	std::unordered_map<std::string, Transaction*> edge_nodes;
 
-Database* transactions;
-Database* chain;
+	Database* transactions;
+	Database* chain;
+
+	std::mutex mtx;
 
 };
 
 using namespace web;
 
+uint64_t web::get_next_tx_pos()
+{
+	mtx.lock();
+
+	uint64_t txpos = chain->get_len() / 16;
+
+	mtx.unlock();
+
+	return txpos;
+}
+
 Transaction* web::get_transaction(uint64_t chpos)
 {
+	mtx.lock();
+
 	// search edge nodes first
 	for(auto& tx : edge_nodes)
 	{
 		if(tx.second->pos == chpos)
 		{
 			Transaction* t = new Transaction(*tx.second);
+
+			mtx.unlock();
 
 			return t;
 		}
@@ -74,6 +91,8 @@ Transaction* web::get_transaction(uint64_t chpos)
 	transactions->read(txc, txlen);
 	Transaction* tx = new Transaction(txc, txlen, nullptr, nullptr, txpos, true);
 
+	mtx.unlock();
+
 	delete[] txc;
 	return tx;
 }
@@ -85,6 +104,14 @@ Transaction* web::get_transaction(const char* txid)
 
 Transaction* web::get_transaction(std::string txid)
 {
+	// must be a proper transaction
+	if(txid.length() != 32)
+	{
+		return nullptr;
+	}
+
+	mtx.lock();
+	
 	// search edge nodes first
 	auto edge_nodes_it = edge_nodes.find(txid);
 
@@ -92,8 +119,12 @@ Transaction* web::get_transaction(std::string txid)
 	{
 		Transaction* t = new Transaction(*edge_nodes_it->second);
 
+		mtx.unlock();
+
 		return t;
 	}
+
+	mtx.unlock();
 
 	// search from filesystem
 	uint64_t txpos = get_transaction_pos(txid.c_str());
@@ -111,6 +142,8 @@ Transaction* web::get_transaction(std::string txid)
 
 void web::update_transaction(Transaction& tx)
 {
+	mtx.lock();
+	
 	// check if edge nodes needs updating
 	auto edge_nodes_it = edge_nodes.find(tx.txid);
 
@@ -146,11 +179,15 @@ void web::update_transaction(Transaction& tx)
 	transactions->write(txc, txlen);
 	transactions->flush();
 
+	mtx.unlock();
+
 	delete[] txc;
 }
 
 uint64_t web::get_transaction_pos(const char* txid)
 {
+	mtx.lock();
+	
 	uint64_t bpos = get_id_data(txid);
 	uint64_t date_start = 0;
 
@@ -175,6 +212,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 
 		if(bytes_are_equal(tx_txid, txid, 32))
 		{
+			mtx.unlock();
+
 			return (chpos - 16) / 16;
 		}
 
@@ -193,6 +232,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 	// cannot search back if already at the start
 	if(bpos == 0)
 	{
+		mtx.unlock();
+
 		return -1;
 	}
 
@@ -216,6 +257,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 
 		if(bytes_are_equal(tx_txid, txid, 32))
 		{
+			mtx.unlock();
+
 			return (chpos - 16) / 16;
 		}
 
@@ -231,6 +274,8 @@ uint64_t web::get_transaction_pos(const char* txid)
 			break;
 		}
 	}
+
+	mtx.unlock();
 
 	return -1;
 }
@@ -351,17 +396,20 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 
 Transaction* web::get_latest_from_address(std::string address)
 {
-	chain->end(0);
+	mtx.lock();
+	
+	uint64_t chpos = chain->get_len() / 16;
 	
 	// 1 MB transaction buffer
 	char* txbuff = new char[1048576];
 
-	while(chain->get_pos() != 0)
+	while(chpos > 0)
 	{
-		chain->shift(-16);
+		chpos -= 1;
+		chain->begin((uint128_t)chpos * 16);
+		
 		uint128_t txpos = chain->read_netue();
 
-		chain->shift(-16);
 		transactions->begin(txpos);
 
 		uint32_t txlen = transactions->read_netui();
@@ -373,7 +421,10 @@ Transaction* web::get_latest_from_address(std::string address)
 		}
 
 		transactions->read(txbuff, txlen);
-		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos, true);
+
+		mtx.unlock();
+
+		Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
 
 		for(Transaction::Input& in : tx.inputs)
 		{
@@ -383,7 +434,11 @@ Transaction* web::get_latest_from_address(std::string address)
 				return new Transaction(tx);
 			}
 		}
+
+		mtx.lock();
 	}
+
+	mtx.unlock();
 
 	delete[] txbuff;
 	return nullptr;
@@ -404,13 +459,19 @@ uint64_t web::find_outputs(std::list<Transaction*>& transactions_found, std::str
 		delete t;
 	}
 
-	chain->begin((uint128_t)begin * 16);
+	mtx.lock();
+
+	uint64_t chpos = begin;
+	uint64_t chlen = chain->get_len() / 16;
 
 	// 1 MB transaction buffer
 	char* txbuff = new char[1048576];
 
-	while(found < limit && !chain->eof())
+	while(found < limit && chpos < chlen)
 	{
+		chain->begin((uint128_t)chpos * 16);
+		chpos += 1;
+
 		uint128_t txpos = chain->read_netue();
 		transactions->begin(txpos);
 
@@ -423,7 +484,10 @@ uint64_t web::find_outputs(std::list<Transaction*>& transactions_found, std::str
 		}
 
 		transactions->read(txbuff, txlen);
-		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos, true);
+
+		mtx.unlock();
+
+		Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
 
 		for(Transaction::Output& out : tx.outputs)
 		{
@@ -434,10 +498,67 @@ uint64_t web::find_outputs(std::list<Transaction*>& transactions_found, std::str
 				break;
 			}
 		}
+
+		mtx.lock();
 	}
+
+	mtx.unlock();
 
 	delete[] txbuff;
 	return found;
+}
+
+void web::find_transactions(uint64_t& at, std::function<bool (Transaction& tx)> callback)
+{
+	mtx.lock();
+
+	uint64_t chpos;
+	uint64_t chlen = chain->get_len() / 16;
+	
+	if(at == -1)
+	{
+		chpos = chlen;
+	}
+
+	else
+	{
+		chpos = at;
+	}
+
+	// 1 MB transaction buffer
+	char* txbuff = new char[1048576];
+	
+	while(chpos > 0)
+	{
+		// go to the right spot and read the transaction
+		chpos -= 1;
+		chain->begin((uint128_t)chpos * 16);
+
+		uint128_t txpos = chain->read_netue();
+		transactions->begin(txpos);
+
+		uint32_t txlen = transactions->read_netui();
+
+		// cannot be over 1 MB
+		if(txlen > 1048576)
+		{
+			continue;
+		}
+
+		transactions->read(txbuff, txlen);
+
+		mtx.unlock();
+		
+		Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
+		callback(tx);
+
+		mtx.lock();
+	}
+
+	mtx.unlock();
+	at = chpos;
+
+	delete[] txbuff;
 }
 
 uint64_t web::find_outputs(std::string find, std::string after, std::function<bool (Transaction& tx, Transaction::Output& out)> callback)
@@ -455,16 +576,18 @@ uint64_t web::find_outputs(std::string find, std::string after, std::function<bo
 		delete t;
 	}
 
-	uint128_t chpos = (uint128_t)begin * 16;
-	uint128_t chlen = chain->get_len();
+	mtx.lock();
+
+	uint64_t chpos = begin;
+	uint64_t chlen = chain->get_len() / 16;
 
 	// 1 MB transaction buffer
 	char* txbuff = new char[1048576];
 
 	while(chpos < chlen)
 	{
-		chain->begin(chpos);
-		chpos += 16;
+		chain->begin((uint128_t)chpos * 16);
+		chpos += 1;
 
 		uint128_t txpos = chain->read_netue();
 		transactions->begin(txpos);
@@ -478,7 +601,10 @@ uint64_t web::find_outputs(std::string find, std::string after, std::function<bo
 		}
 
 		transactions->read(txbuff, txlen);
-		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos, true);
+
+		mtx.unlock();
+
+		Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
 
 		for(Transaction::Output& out : tx.outputs)
 		{
@@ -486,6 +612,8 @@ uint64_t web::find_outputs(std::string find, std::string after, std::function<bo
 			{
 				if(!callback(tx, out))
 				{
+					mtx.unlock();
+
 					delete[] txbuff;
 					return found;
 				}
@@ -495,7 +623,11 @@ uint64_t web::find_outputs(std::string find, std::string after, std::function<bo
 				break;
 			}
 		}
+
+		mtx.lock();
 	}
+
+	mtx.unlock();
 
 	delete[] txbuff;
 	return found;
@@ -503,15 +635,17 @@ uint64_t web::find_outputs(std::string find, std::string after, std::function<bo
 
 void web::show_all()
 {
-	uint128_t chpos = 0;
-	uint128_t chlen = chain->get_len();
+	mtx.lock();
+
+	uint64_t chpos = 0;
+	uint64_t chlen = chain->get_len() / 16;
 	
 	// 1 MB transaction buffer
 	char* txbuff = new char[1048576];
 
 	while(chpos < chlen)
 	{
-		chain->begin(chpos);
+		chain->begin((uint128_t)chpos * 16);
 		uint128_t txpos = chain->read_netue();
 		transactions->begin(txpos);
 		chpos += 16;
@@ -525,21 +659,25 @@ void web::show_all()
 		}
 		
 		transactions->read(txbuff, txlen);
-		Transaction tx(txbuff, txlen, nullptr, nullptr, txpos, true);
+		
+		mtx.unlock();
+
+		Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
 
 		std::cout << tx.to_string(0) << std::endl;
+
+		mtx.lock();
 	}
+
+	mtx.unlock();
 
 	delete[] txbuff;
 }
 
 void web::add_transaction(Transaction& t)
 {
-	uint128_t txpos = transactions->get_len();
-	uint128_t chpos = chain->get_len();
-	
 	// prepare this transaction to be stored
-	t.set_pos(chpos / 16);
+	t.set_pos(-1);
 	t.finalize();
 	t.optimize();
 
@@ -547,6 +685,11 @@ void web::add_transaction(Transaction& t)
 	char* tx = new char[txlen];
 	
 	t.serialize(tx);
+
+	mtx.lock();
+
+	uint128_t txpos = transactions->get_len();
+	uint128_t chpos = chain->get_len();
 
 	// write the new transaction to the end of the web
 	chain->begin(chpos);
@@ -557,28 +700,51 @@ void web::add_transaction(Transaction& t)
 	transactions->write_netui(txlen);
 	transactions->write(tx, txlen);
 	transactions->flush();
+	
+	mtx.unlock();
 
 	edge_nodes[t.txid] = new Transaction(t);
 
 	// update previous transactions to point to this one
-	
+
 	// confirms
 	for(int i = 0; i < 2; i++)
 	{
-		uint64_t conf_txpos = t.verifies_pos[i];
-		Transaction* tx_conf = web::get_transaction(conf_txpos);
+		Transaction* tx_conf = web::get_transaction(t.verifies[i]);
 
-		tx_conf->add_confirm(t.txid, t.pos);
+		if(tx_conf != nullptr)
+		{
+			tx_conf->add_confirm(t.txid, t.pos);
+			web::update_transaction(*tx_conf);
 
-		web::update_transaction(*tx_conf);
-
-		delete tx_conf;
+			delete tx_conf;
+		}
 	}
 
 	// inputs
 	for(Transaction::Input& in : t.inputs)
 	{
-//		uint64_t prev_pos = t.
+		Transaction* tx_prev = web::get_transaction(in.prev);
+
+		if(tx_prev != nullptr)
+		{
+			for(Transaction::Input& in_prev : tx_prev->inputs)
+			{
+				if(in_prev.address == in.address)
+				{
+					in_prev.next = t.txid;
+					in_prev.nextpos = t.pos;
+
+					break;
+				}
+			}
+
+			web::update_transaction(*tx_prev);
+
+			delete tx_prev;
+		}
+
+		break;
 	}
 
 	delete[] tx;
@@ -663,13 +829,13 @@ void web::init()
 		// 1 MB transaction buffer
 		char* txbuff = new char[1048576];
 
-		uint128_t chlen = chain->get_len();
-		uint128_t chpos = chlen;
+		uint64_t chlen = chain->get_len() / 16;
+		uint64_t chpos = chlen;
 
 		while(chpos > 0)
 		{
-			chpos -= 16;
-			chain->begin(chpos);
+			chpos -= 1;
+			chain->begin((uint128_t)chpos * 16);
 
 			uint128_t txpos = chain->read_netue();
 			transactions->begin(txpos);
@@ -683,7 +849,7 @@ void web::init()
 			}
 
 			transactions->read(txbuff, txlen);
-			Transaction tx(txbuff, txlen, nullptr, nullptr, txpos, true);
+			Transaction tx(txbuff, txlen, nullptr, nullptr, chpos, true);
 
 			if(tx.count_confirms() < 2)
 			{
@@ -705,10 +871,12 @@ void web::update()
 {
 	uint64_t now = get_micros();
 	
+	mtx.lock();
+
 	// automatically remove old edge nodes
 	if(edge_nodes.size() > 1024)
 	{
-		for(auto it = edge_nodes.begin(); it != edge_nodes.end(); it++)
+		for(auto it = edge_nodes.begin(); it != edge_nodes.end();)
 		{
 			Transaction* tx = it->second;
 
@@ -719,11 +887,16 @@ void web::update()
 				delete tx;
 				continue;
 			}
+
+			else
+			{
+				it++;
+			}
 		}
 	}
 
 	// automatically remove confirmed nodes
-	for(auto it = edge_nodes.begin(); it != edge_nodes.end(); it++)
+	for(auto it = edge_nodes.begin(); it != edge_nodes.end();)
 	{
 		Transaction* tx = it->second;
 
@@ -734,18 +907,25 @@ void web::update()
 			delete tx;
 			continue;
 		}
+
+		else
+		{
+			it++;
+		}
 	}
+
+	mtx.unlock();
 }
 
 void web::get_edge_nodes(Transaction*& tx1, Transaction*& tx2)
 {
+	mtx.lock();
+	
 	uint64_t item1, item2, i;
 	uint64_t edge_nodes_len = edge_nodes.size();
 	
 	RAND_bytes((uint8_t*)&item1, 8);
 	RAND_bytes((uint8_t*)&item2, 8);
-
-	std::cout << "edge_nodes: " << edge_nodes_len << std::endl;
 
 	// force item1 and item2 into a range
 	item1 %= edge_nodes_len;
@@ -776,16 +956,13 @@ void web::get_edge_nodes(Transaction*& tx1, Transaction*& tx2)
 	// get item1 and item2
 	auto it = edge_nodes.begin();
 
-	std::cout << "item1 = " << item1 << ", item2 = " << item2 << std::endl;
-	std::cout << "at " << i << std::endl;
-
 	for(i = 0; i < item1;)
 	{
 		it++;
 		i++;
 	}
 
-	tx1 = it->second;
+	tx1 = new Transaction(*it->second);
 
 	for(;i < item2;)
 	{
@@ -793,13 +970,21 @@ void web::get_edge_nodes(Transaction*& tx1, Transaction*& tx2)
 		i++;
 	}
 
-	tx2 = it->second;
+	tx2 = new Transaction(*it->second);
+
+	mtx.unlock();
 }
 
 void web::cleanup()
 {
 	web::transactions->close();
 	web::chain->close();
+
+	// clean up edge nodes
+	for(auto& tx : edge_nodes)
+	{
+		delete tx.second;
+	}
 
 	delete web::transactions;
 	delete web::chain;
@@ -834,13 +1019,13 @@ void web::generate_new()
 	t1.set_pos(0);
 	t2.set_pos(1);
 
-	t1.add_input(prikey1, 0, "", sources);
+	t1.add_input(prikey1, -1, 0, "", sources);
 	t1.add_output(address2, -1);
 	t1.finalize();
 
 	sources.push_back(t1.get_txid());
 	
-	t2.add_input(prikey2, 0, "", sources);
+	t2.add_input(prikey2, -1, 0, "", sources);
 	t2.add_output(address1, -1);
 	t2.finalize();
 

@@ -29,9 +29,10 @@ namespace http
 	struct sockaddr_in addr;
 
 	int sockfd;
-	bool running;
+	volatile bool running;
 
 	Json::Value handle_req(Request* req, std::string at);
+	void process_req(Request* req);
 
 	std::string INVALID_REQUEST = std::string("")+
 			"HTTP/1.1 400 Error\n"+
@@ -48,8 +49,9 @@ namespace http
 			{"generatewallet", "generate a new wallet along with the private key, public key, and wallet address", "{\"seed\": seed} OR /generatewallet"},
 			{"getwallet", "get a wallets other details from its private key", "{\"prikey\": prikey} OR /getwallet/<prikey>"},
 			{"gettransaction", "get a given transaction by its transaction ID", "{\"txid\": txid} OR /gettransaction/<txid>"},
-			{"getaddress", "get information about an address, like the latest transaction and its balance", "{\"address\": address} OR /getaddress/<address>"},
-			{"listoutputs", "find every time a transaction has been made to an address", "{\"address\": address, \"last\": last, \"limit\": limit} OR /listoutputs/<address>"},
+			{"getaddress", "get information about an address, like its balance and activity", "{\"address\": address} OR /getaddress/<address>"},
+			{"gethashrate", "get current hashrate statistics and ETAs", ""},
+			{"listtransactions", "find the history of every time transactions have been made to or from some addresses", "{\"addresses\": [address, ...], \"at\"?: at, \"limit\"?: limit, \"mode\"?: \"spend\" \"receive\" or \"all\"} OR /listtransactions/<address>"},
 			{"send", "generate a transaction and send funds from at least 1 wallet to at least 1 address", "{\"inputs\": [{\"prikey\": prikey, \"amount\": amount}...], \"outputs\": [{\"address\", address, \"amount\": amount}...]}"},
 			{"getedgenodes", "get all current edge nodes", ""},
 			{"getrawtransaction", "get a given raw transaction by its transaction ID", "{\"txid\": txid} OR /getrawtransaction/<txid>"},
@@ -83,11 +85,11 @@ void http::run()
 
 		if(sock_new < 0)
 		{
-			std::cout << "Connection failed\n";
 			continue;
 		}
 
-		new http::Request(sock_new);
+		Request* req = new http::Request(sock_new);
+		req->handle = std::thread(&http::process_req, req);
 	}
 }
 
@@ -275,11 +277,6 @@ Json::Value http::handle_req(Request* req, std::string at)
 		return value;
 	}
 
-	else if(at == "listtransactions")
-	{
-		web::show_all();
-	}
-
 	else if(at == "gettransaction" || at == "getrawtransaction")
 	{
 		std::string txid;
@@ -349,55 +346,6 @@ Json::Value http::handle_req(Request* req, std::string at)
 		return v;
 	}
 
-	else if(at == "listoutputs")
-	{
-		std::string address;
-		std::string from = "";
-		int limit = 1024;
-
-		if(req->pathc >= 2)
-		{
-			address = req->pathv[1];
-		}
-
-		else
-		{
-			address = req->value["address"].asString();
-			from = req->value["from"].asString();
-			limit = req->value["limit"].asInt();
-
-			if(limit <= 0)
-			{
-				limit = 1024;
-			}
-		}
-
-		if(!address::verify(address))
-		{
-			Json::Value v;
-			v["error"] = "invalid address";
-			v["address"] = address;
-
-			return v;
-		}
-
-		std::list<Transaction*> transactions;
-		web::find_outputs(transactions, address::gethash(address), "", 1024);
-
-		int i = 0;
-		Json::Value v;
-		
-		for(auto at = transactions.begin(); at != transactions.end(); at++)
-		{
-			v[i] = (*at)->to_json();
-			i += 1;
-			
-			delete *at;
-		}
-
-		return v;
-	}
-
 	else if(at == "getaddress")
 	{
 		std::string address;
@@ -421,22 +369,76 @@ Json::Value http::handle_req(Request* req, std::string at)
 			return v;
 		}
 
+		std::string address_hash = address::gethash(address);
 		std::list<Transaction*> unconfirmed;
 		uint64_t balance;
 		Transaction* tx;
 		Json::Value v;
 
-		web::get_address_info(address::gethash(address), balance, tx, unconfirmed, 0);
+		web::get_address_info(address_hash, balance, tx, unconfirmed, 0);
 		
 		v["balance"] = std::to_string(balance);
 		v["address"] = address;
+/*
+		Json::Value& unconfirmed_j = v["unconfirmed"];
+
+		if(unconfirmed.size() > 0)
+		{
+			int it = 0;
+
+			for(Transaction* tx_u : unconfirmed)
+			{
+				for(Transaction::Output& out : tx_u->outputs)
+				{
+					if(out.address == address_hash)
+					{
+						unconfirmed_j[it]["amount"] = std::to_string(out.amount);
+						unconfirmed_j[it]["confirms"] = tx_u->count_confirms();
+						//unconfirmed_j[it]["work"] = display_unsigned_e(tx.work);
+						unconfirmed_j[it]["txid"] = to_hex(tx_u->txid);
+						unconfirmed_j[it]["created"] = std::to_string(tx_u->created);
+						unconfirmed_j[it]["received"] = std::to_string(tx_u->received);
+	
+						if(out.msg.length() > 0)
+						{
+							unconfirmed_j[it]["message"] = out.msg;
+						}
+						
+						Json::Value& inputs_j = unconfirmed_j[it]["inputs"];
+						int i = 0;
+
+						for(Transaction::Input& in : tx_u->inputs)
+						{
+							unconfirmed_j[i]["address"] = address::fromhash(in.address);
+	
+							i += 1;
+						}
+						
+						it += 1;
+
+						break;
+					}
+				}
+
+				delete tx_u;
+			}
+		}*/
 
 		if(tx != nullptr)
 		{
-			v["tx"] = tx->to_json();
-
 			delete tx;
 		}
+
+		return v;
+	}
+
+	else if(at == "gethashrate")
+	{
+		uint64_t hashrate = transaction_hashrate.load();
+
+		Json::Value v;
+		v["hashrate"] = std::to_string(hashrate);
+		v["eta"] = 16777216.0 / hashrate;
 
 		return v;
 	}
@@ -455,13 +457,207 @@ Json::Value http::handle_req(Request* req, std::string at)
 		return v;
 	}
 
+	else if(at == "listtransactions")
+	{
+		std::list<std::string> from;
+		bool get_in, get_out;
+		uint64_t at;
+		int limit;
+
+		try
+		{
+			limit = std::stoi(req->value["limit"].asString());
+		}
+
+		catch(std::exception& e)
+		{
+			limit = 64;
+		}
+
+		try
+		{
+			at = std::stoul(req->value["at"].asString());
+		}
+
+		catch(std::exception& e)
+		{
+			at = -1;
+		}
+		
+		Json::Value& from_j = req->value["addresses"];
+		std::string get_type = req->value["type"].asString();
+
+		if(get_type == "spend")
+		{
+			get_in = false;
+			get_out = true;
+		}
+
+		else if(get_type == "receive")
+		{
+			get_in = true;
+			get_out = false;
+		}
+		
+		else
+		{
+			get_in = true;
+			get_out = true;
+		}
+
+		// get addresses
+		for(int i = 0; i < from_j.size(); i++)
+		{
+			std::string address = from_j[i].asString();
+
+			if(!address::verify(address))
+			{
+				continue;
+			}
+
+			from.push_back(address::gethash(address));
+		}
+
+		if(req->pathc > 1)
+		{
+			std::string address = req->pathv[1];
+
+			if(address::verify(address))
+			{
+				from.push_back(address::gethash(address));
+			}
+		}
+
+		Json::Value v;
+		Json::Value& transactions_j = v["transactions"];
+		int it = 0;
+
+		web::find_transactions(at, [&from, limit, get_in, get_out, &transactions_j, &it](Transaction& tx)
+		{
+			if(get_out)
+			{
+				for(Transaction::Input& in : tx.inputs)
+				{
+					for(std::string& address : from)
+					{
+						if(address == in.address)
+						{
+							transactions_j[it]["type"] = "spend";
+							transactions_j[it]["amount"] = std::to_string(in.amount);
+							transactions_j[it]["confirms"] = tx.count_confirms();
+							//transactions_j[it]["work"] = display_unsigned_e(tx.work);
+							transactions_j[it]["txid"] = to_hex(tx.txid);
+							transactions_j[it]["created"] = std::to_string(tx.created);
+							transactions_j[it]["received"] = std::to_string(tx.received);
+	
+							Json::Value& inputs_j = transactions_j[it]["inputs"];
+							Json::Value& outputs_j = transactions_j[it]["outputs"];
+							int it_i = 0, it_o = 0;
+
+							for(Transaction::Input& in : tx.inputs)
+							{
+								inputs_j[it_i]["address"] = address::fromhash(in.address);
+								inputs_j[it_i]["amount"] = std::to_string(in.amount);
+	
+								it_i += 1;
+							}
+							
+							for(Transaction::Output& out : tx.outputs)
+							{
+								outputs_j[it_o]["address"] = address::fromhash(out.address);
+								outputs_j[it_o]["amount"] = std::to_string(out.amount);
+	
+								if(out.msg.length() > 0)
+								{
+									outputs_j[it_o]["message"] = out.msg;
+								}
+	
+								it_o += 1;
+							}
+	
+							it += 1;
+	
+							if(it >= limit)
+							{
+								return false;
+							}
+						}
+					}
+				}
+			}
+
+			if(get_in)
+			{
+				for(Transaction::Output& out : tx.outputs)
+				{
+					for(std::string& address : from)
+					{
+						if(address == out.address)
+						{
+							transactions_j[it]["type"] = "receive";
+							transactions_j[it]["amount"] = std::to_string(out.amount);
+							transactions_j[it]["confirms"] = tx.count_confirms();
+							//transactions_j[it]["work"] = display_unsigned_e(tx.work);
+							transactions_j[it]["txid"] = to_hex(tx.txid);
+							transactions_j[it]["created"] = std::to_string(tx.created);
+							transactions_j[it]["received"] = std::to_string(tx.received);
+	
+							if(out.msg.length() > 0)
+							{
+								transactions_j[it]["message"] = out.msg;
+							}
+							
+							Json::Value& inputs_j = transactions_j[it]["inputs"];
+							Json::Value& outputs_j = transactions_j[it]["outputs"];
+							int it_i = 0, it_o = 0;
+
+							for(Transaction::Input& in : tx.inputs)
+							{
+								inputs_j[it_i]["address"] = address::fromhash(in.address);
+								inputs_j[it_i]["amount"] = std::to_string(in.amount);
+	
+								it_i += 1;
+							}
+							
+							for(Transaction::Output& out : tx.outputs)
+							{
+								outputs_j[it_o]["address"] = address::fromhash(out.address);
+								outputs_j[it_o]["amount"] = std::to_string(out.amount);
+	
+								if(out.msg.length() > 0)
+								{
+									outputs_j[it_o]["message"] = out.msg;
+								}
+	
+								it_o += 1;
+							}
+							
+							it += 1;
+	
+							if(it >= limit)
+							{
+								return false;
+							}
+						}
+					}
+				}
+			}
+
+			return true;
+		});
+
+		v["at"] = at;
+
+		return v;
+	}
+
 	else if(at == "send")
 	{
 		Json::Value& inputs_j = req->value["inputs"];
 		Json::Value& outputs_j = req->value["outputs"];
 
 		int len_in = inputs_j.size();
-		int len_out = inputs_j.size();
+		int len_out = outputs_j.size();
 
 		uint64_t total_in = 0;
 		uint64_t total_out = 0;
@@ -510,38 +706,39 @@ Json::Value http::handle_req(Request* req, std::string at)
 				if(amount + total_in < total_in)
 				{
 					Json::Value v;
-					v["error"] = "insufficient funds";
+					v["error"] = "insufficient funds 1";
 					return v;
 				}
 
 				prikey = sig::generate(prikey);
 
-				uint64_t balance;
 				Transaction* tx;
+				uint64_t balance_a;
+				__uint128_t balance;
 				std::list<Transaction*> unconfirmed;
 				std::list<std::string> unconfirmed_txids;
 				std::string address = address::fromprikey(prikey);
+				std::string txid;
 
-				web::get_address_info(address, balance, tx, unconfirmed, 65536);
-
-				// empty wallet cannot create a transaction
-				if(tx == nullptr)
-				{
-					Json::Value v;
-					v["error"] = "insufficient funds";
-					return v;
-				}
+				web::get_address_info(address, balance_a, tx, unconfirmed, 65536);
 
 				balance = 0;
 
 				// get confirmed balance
-				for(Transaction::Input& in : tx->inputs)
+				if(tx != nullptr)
 				{
-					if(in.address == address)
+					for(Transaction::Input& in : tx->inputs)
 					{
-						balance = in.balance;
-						break;
+						if(in.address == address)
+						{
+							balance = in.balance;
+							break;
+						}
 					}
+
+					txid = tx->txid;
+
+					delete tx;
 				}
 
 				// add unconfirmed balance
@@ -555,7 +752,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 							// if this happens, something is very wrong. 
 							if(balance + out.amount < balance)
 							{
-								std::cout << "integer overflow found. double spending has happened.\n";
+								std::cout << "integer overflow found. double spending has happened. balance = " << display_unsigned_e(balance) << ", out.amount = " << out.amount << "\n";
 							}
 
 							balance += out.amount;
@@ -564,19 +761,20 @@ Json::Value http::handle_req(Request* req, std::string at)
 							break;
 						}
 					}
+
+					delete source;
 				}
 
 				// prevent spending more than allowed
 				if(amount > balance)
 				{
 					Json::Value v;
-					v["error"] = "insufficient funds";
+					v["error"] = "insufficient funds 2";
 					return v;
 				}
 
 				total_in += amount;
-
-				tx_final.add_input(prikey, balance - amount, tx->get_txid(), unconfirmed_txids);
+				tx_final.add_input(prikey, amount, balance - amount, txid, unconfirmed_txids);
 			}
 
 			catch(std::exception& e)
@@ -621,6 +819,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 		{
 			Json::Value v;
 			v["error"] = "total in must match total out";
+			std::cout << "total in = " << total_in << ", total out = " << total_out << ", len in = " << len_in << ", len out = " << len_out << "\n";
 			return v;
 		}
 
@@ -637,7 +836,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 void http::update()
 {
-	for(;;)
+	/*for(;;)
 	{
 		Request* req;
 		
@@ -659,19 +858,19 @@ void http::update()
 		req->respond(handle_req(req, at));
 
 		delete req;
-	}
+	}*/
 }
 
 void http::cleanup()
 {
-	handle.detach();
 	running = false;
+	::shutdown(sockfd, SHUT_RDWR);
+	handle.join();
 }
 
 http::Request::Request(int fd)
 {
 	sockfd = fd;
-	handle = std::thread(&http::Request::run, this);
 	pathv = nullptr;
 }
 
@@ -721,7 +920,7 @@ void http::Request::close()
 	}
 }
 
-void http::Request::run()
+void http::process_req(Request* req)
 {
 	size_t content_length = 0;
 	bool authorised = false;
@@ -729,7 +928,7 @@ void http::Request::run()
 	std::string http_path;
 
 	bool first = true;
-	char* buff_upto = buffer;
+	char* buff_upto = req->buffer;
 	int newlines = 0;
 	char buff_c;
 
@@ -737,7 +936,7 @@ void http::Request::run()
 
 	for(;;)
 	{
-		read(sockfd, &buff_c, 1);
+		read(req->sockfd, &buff_c, 1);
 
 		// ignore these
 		if(buff_c == '\r')
@@ -749,8 +948,8 @@ void http::Request::run()
 		{
 			newlines += 1;
 
-			size_t buff_len = (size_t)(buff_upto - buffer);
-			std::string data(buffer, buff_len);
+			size_t buff_len = (size_t)(buff_upto - req->buffer);
+			char* buff_end = req->buffer + buff_len;
 
 			if(first) // should be somethig like "METHOD /path HTTP/1.1"
 			{
@@ -759,7 +958,7 @@ void http::Request::run()
 				bool ignore = false;
 				int at = 0;
 
-				for(auto i = data.begin(); i != data.end(); i++)
+				for(char* i = req->buffer; i < buff_end; i++)
 				{
 					char c = *i;
 
@@ -796,9 +995,9 @@ void http::Request::run()
 
 				if(at != 2 || header[2] != "HTTP/1.1" || header[1].length() == 0 || !(header[1][0] == '/' || header[1][0] == '\\'))
 				{
-					write(sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
+					write(req->sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
 
-					delete this;
+					delete req;
 					return;
 				}
 
@@ -815,7 +1014,7 @@ void http::Request::run()
 				std::string header_value;
 				int step = 0;
 
-				for(auto at = data.begin(); at != data.end(); at++)
+				for(char* at = req->buffer; at < buff_end; at++)
 				{
 					char c = *at;
 
@@ -890,9 +1089,9 @@ void http::Request::run()
 					// catch any errors
 					catch(std::exception& e)
 					{
-						write(sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
+						write(req->sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
 
-						delete this;
+						delete req;
 						return;
 					}
 				}
@@ -908,9 +1107,9 @@ void http::Request::run()
 					else
 					{
 						std::string response = generate_error("invalid auth key");
-						write(sockfd, response.c_str(), response.length());
+						write(req->sockfd, response.c_str(), response.length());
 
-						delete this;
+						delete req;
 						return;
 					}
 				}
@@ -924,17 +1123,17 @@ void http::Request::run()
 				}
 			}
 
-			buff_upto = buffer;
+			buff_upto = req->buffer;
 		}
 
 		else
 		{
 			// prevent a buffer overflow
-			if(buff_upto >= buffer + sizeof(buffer))
+			if(buff_upto >= req->buffer + sizeof(req->buffer))
 			{
-				write(sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
+				write(req->sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
 
-				delete this;
+				delete req;
 				return;
 			}
 
@@ -952,27 +1151,27 @@ void http::Request::run()
 				// invalid content length or greater than the limit (1 MB)
 				if(content_length <= 0 || content_length > 1048576)
 				{
-					write(sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
+					write(req->sockfd, INVALID_REQUEST.c_str(), INVALID_REQUEST.length());
 
-					delete this;
+					delete req;
 					return;
 				}
 
 				char* data = new char[content_length];
 
-				read(sockfd, data, content_length);
+				read(req->sockfd, data, content_length);
 
 				std::string errors;
 				Json::CharReaderBuilder builder;
 				auto reader = builder.newCharReader();
 				
-				if(!reader->parse(data, data + content_length, &value, &errors))
+				if(!reader->parse(data, data + content_length, &req->value, &errors))
 				{
 					std::string response = generate_error("invalid json: " + errors);
-					write(sockfd, response.c_str(), response.length());
+					write(req->sockfd, response.c_str(), response.length());
 
 					delete reader;
-					delete this;
+					delete req;
 					return;
 				}
 
@@ -980,7 +1179,7 @@ void http::Request::run()
 				delete[] data;
 			}
 
-			pathc = 0;
+			req->pathc = 0;
 			char end_c = *(http_path.end() - 1);
 			
 			if(end_c == '\\' || end_c == '/')
@@ -997,18 +1196,18 @@ void http::Request::run()
 				// break
 				if(c == '\\' || c == '/')
 				{
-					pathc += 1;
+					req->pathc += 1;
 				}
 			}
 
-			if(pathc == 0)
+			if(req->pathc == 0)
 			{
-				pathc = 1;
+				req->pathc = 1;
 			}
 
 			int path_at = 0;
-			pathv = new std::string[pathc];
-			buff_upto = buffer;
+			req->pathv = new std::string[req->pathc];
+			buff_upto = req->buffer;
 
 			for(auto at = http_path.begin() + 1; at < http_path.end(); at++)
 			{
@@ -1017,8 +1216,8 @@ void http::Request::run()
 				// break
 				if(c == '\\' || c == '/')
 				{
-					pathv[path_at++] = std::string(buffer, (size_t)(buff_upto - buffer));
-					buff_upto = buffer;
+					req->pathv[path_at++] = std::string(req->buffer, (size_t)(buff_upto - req->buffer));
+					buff_upto = req->buffer;
 				}
 
 				else
@@ -1028,13 +1227,13 @@ void http::Request::run()
 				}
 			}
 		
-			if(buff_upto > buffer)
+			if(buff_upto > req->buffer)
 			{
-				pathv[path_at] = std::string(buffer, (size_t)(buff_upto - buffer));
+				req->pathv[path_at] = std::string(req->buffer, (size_t)(buff_upto - req->buffer));
 			}
 
 			// send back a login page if the user isn't even logged in
-			if(!authorised && pathv[0] != "auth")
+			if(!authorised && req->pathv[0] != "auth")
 			{
 				// some html to ask a non-authenticated user to set their
 				// auth cookie so they can log in via their cookie
@@ -1061,16 +1260,37 @@ void http::Request::run()
 						"Content-Type: text/html; charset=utf-8\n" + 
 						"Content-Length: "+std::to_string(content.length())+"\n";
 
-				respond(401, "Auth", headers, content);
+				req->respond(401, "Auth", headers, content);
 
-				delete this;
+				delete req;
 				return;
 			}
 
-			http::mtx.lock();
-			http::requests.push(this);
-			http::mtx.unlock();
-			
+			//http::mtx.lock();
+			//http::requests.push(req);
+			//http::mtx.unlock();
+		
+			// handle what the request is asking	
+			std::string at = to_lower(req->pathv[0]);
+
+			try
+			{
+				req->respond(handle_req(req, at));
+			}
+
+			catch(std::exception& e)
+			{
+				const std::string content = "{\"error\": \"internal error\"}\n";
+				std::string headers = std::string()+
+						"Content-Type: text/html; charset=utf-8\n" + 
+						"Content-Length: "+std::to_string(content.length())+"\n";
+
+				req->respond(500, "Internal", headers, content);
+
+				std::cerr << "Exception caught: what() = " << e.what() << std::endl;
+			}
+
+			delete req;
 			return;
 		}
 	}

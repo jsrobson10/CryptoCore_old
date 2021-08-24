@@ -10,8 +10,13 @@
 #include <openssl/rand.h>
 #include <unistd.h>
 
+#include <iostream>
 #include <thread>
 #include <cstring>
+#include <atomic>
+#include <mutex>
+
+//#define NO_MINING
 
 /*
  * 
@@ -29,6 +34,7 @@
  *   [prev, 32]
  *   [pubkey, SIG_LEN_PUBKEY]
  *   [balance, 8]
+ *   [amount, 8]
  *   [sources, 2]
  *   (sources)
  *   {
@@ -62,6 +68,8 @@
  * }
  *
  */
+
+std::atomic<uint64_t> transaction_hashrate(0);
 
 Transaction::Transaction()
 {
@@ -144,9 +152,10 @@ Transaction::Transaction(const char* bytes, size_t len, const char** bytes_n, si
 		input.prev = std::string(bytes, 32);
 		input.pubkey = std::string(bytes + 32, SIG_LEN_PUBKEY);
 		input.balance = get_netul(bytes + 32 + SIG_LEN_PUBKEY);
+		input.amount = get_netul(bytes + 40 + SIG_LEN_PUBKEY);
 		input.address = address::frompubkey(input.pubkey);
 
-		int c = 42 + SIG_LEN_PUBKEY;
+		int c = 50 + SIG_LEN_PUBKEY;
 
 		bytes += c;
 		len -= c;
@@ -313,8 +322,9 @@ const char* Transaction::get_errors()
 		return "finalized flag not set";
 	}
 
-	uint64_t total_in = 0;
-	uint64_t total_out = 0;
+	__uint128_t total_in = 0;
+	__uint128_t total_out = 0;
+	__uint128_t total_b_in = 0;
 	
 	// calculate total in
 	for(Transaction::Input& input : inputs)
@@ -369,6 +379,7 @@ const char* Transaction::get_errors()
 		}
 
 		total_in += balance - input.balance;
+		total_b_in += input.amount;
 	}
 	
 	// calculate total out
@@ -392,6 +403,20 @@ const char* Transaction::get_errors()
 	if(total_in != total_out)
 	{
 		return "total in does not match total out";
+	}
+
+	// total in mismatch
+	if(total_in != total_b_in)
+	{
+		return "total in does not match calculated in";
+	}
+
+	const uint64_t max_value = 0xffffffffffffffff;
+
+	// overflow
+	if(total_in > max_value || total_out > max_value || total_b_in > max_value)
+	{
+		return "invalid amount";
 	}
 	
 	// check confirms and verifies for duplicates or self references
@@ -471,10 +496,12 @@ const char* Transaction::get_errors()
 	
 	delete[] tx;
 
+#ifndef NO_MINING
 	if(digest_c[0] != 0x00 || digest_c[1] != 0x00 || digest_c[2] != 0x00)
 	{
 		return "not enough work";
 	}
+#endif
 
 	std::string digest(digest_c, 32);
 
@@ -508,7 +535,7 @@ size_t Transaction::serialize_t_len()
 	{
 		for(Transaction::Input& input : inputs)
 		{
-			len_inputs += 42 + SIG_LEN_PUBKEY + input.sources.size() * 32;
+			len_inputs += 50 + SIG_LEN_PUBKEY + input.sources.size() * 32;
 		}
 	}
 
@@ -516,7 +543,7 @@ size_t Transaction::serialize_t_len()
 	{
 		for(Transaction::InputNew input : inputs_new)
 		{
-			len_inputs += 42 + SIG_LEN_PUBKEY + input.sources.size() * 32;
+			len_inputs += 50 + SIG_LEN_PUBKEY + input.sources.size() * 32;
 		}
 	}
 
@@ -551,8 +578,9 @@ char* Transaction::serialize_t(char* data)
 			memcpy_if(data, input.prev.c_str(), '\0', 32, input.prev.length() == 32);
 			memcpy(data + 32, input.pubkey.c_str(), SIG_LEN_PUBKEY);
 			put_netul(data + 32 + SIG_LEN_PUBKEY, input.balance);
+			put_netul(data + 40 + SIG_LEN_PUBKEY, input.amount);
 
-			data += 42 + SIG_LEN_PUBKEY;
+			data += 50 + SIG_LEN_PUBKEY;
 			put_netus(data - 2, input.sources.size() & 65535);
 
 			for(std::string& source : input.sources)
@@ -577,8 +605,9 @@ char* Transaction::serialize_t(char* data)
 			memcpy_if(data, input.prev.c_str(), '\0', 32, input.prev.length() == 32);
 			memcpy(data + 32, pubkey.c_str(), SIG_LEN_PUBKEY);
 			put_netul(data + 32 + SIG_LEN_PUBKEY, input.balance);
+			put_netul(data + 40 + SIG_LEN_PUBKEY, input.amount);
 
-			data += 42 + SIG_LEN_PUBKEY;
+			data += 50 + SIG_LEN_PUBKEY;
 			put_netus(data - 2, input.sources.size() & 65535);
 
 			for(std::string& source : input.sources)
@@ -593,11 +622,11 @@ char* Transaction::serialize_t(char* data)
 
 	for(Transaction::Output& output : outputs)
 	{
-		uint8_t msg_len = output.msg.length() & 255;
+		uint16_t msg_len = output.msg.length() & 65535;
 
 		if(output.msg.length() > msg_len)
 		{
-			msg_len = 255;
+			msg_len = 65535;
 		}
 
 		memcpy(data, output.address.c_str(), 20);
@@ -659,31 +688,75 @@ char* Transaction::serialize(char* data)
 	return data;
 }
 
-void Transaction::finalize_worker(bool* running, bool* status, uint64_t pos, char* tx, size_t txlen)
+struct finalize_data
+{
+	uint64_t pos = 0;
+	char verify[128] = {0};
+};
+
+static void finalize_worker(volatile bool* running, bool* status, char* tx, size_t txlen, std::atomic<finalize_data>* data, std::atomic<uint64_t>* hashrate)
 {
 	// generate the txid
 	
 	char txhash_c[32];
+	uint64_t hashrate_c = 0;
+	uint64_t us_inc = get_micros() - 1000000;
+	uint64_t pos;
 	
 	RAND_bytes((uint8_t*)(tx + 8), 32);
 
 	// only run while other threads are running
+	//
+	// i don't care if theres some memory race
+	// UB from reading this as it's written, 
+	// because it doesn't really change much if
+	// this is interperated as true or false when
+	// it's in the middle of being written to.
+	//
+	// making this an atomic variable would just
+	// be much less efficiency from wasted CPU
+	// cycles just to prevent memory race UB
+	// that i don't actually care about. 
 	while(*running)
 	{
-		// set these to generate a unique txid
-		uint64_t created = get_micros();
-		put_netul(tx, created);
+		uint64_t us_now = get_micros();
+
+		if(us_now - us_inc >= 1000000)
+		{
+			// the "main thread" sends us up to date
+			// transaction data every second
+			us_inc += 1000000;
+			finalize_data gdata = data->load();
+			memcpy(tx + 72,  gdata.verify, 128);
+			put_netul(tx, us_now);
+			pos = gdata.pos;
+
+			// i care about UB memory race protection
+			// here because this bit of code is
+			// only being run every second, and i
+			// want accurate hashrate reporting.
+			*hashrate += hashrate_c;
+			hashrate_c = 0;
+		}
+
+		// increment local hashrate
+		hashrate_c += 1;
+
+		// first clear out the txid to get the txid
 		memset(tx + 40, 0, 32);
 
-		// generate the txid
+		// generate the txid with the seed included
 		SHA256((uint8_t*)tx, txlen, (uint8_t*)(tx + 40));
 		set_id_data(tx + 40, pos);
 
 		// check if enough work has been done
 		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
 
+#ifndef NO_MINING
 		if(txhash_c[0] == 0x00 && txhash_c[1] == 0x00 && txhash_c[2] == 0x00)
+#endif
 		{
+			// tell every thread to quit
 			*running = false;
 			*status = true;
 			break;
@@ -706,28 +779,45 @@ void Transaction::finalize()
 
 	// do proof of work on multiple threads
 	{
+		// only 1 proof of work can be calculated at a time
+		// this is to help prevent issues with related transactions
+		// and one being rejected
+		static std::mutex mtx_pow;
+		mtx_pow.lock();
+
 		size_t txlen = serialize_t_len();
 		char* tx = new char[txlen];
-
-		if(pos > 1)
-		{
-			Transaction *t1, *t2;
-
-			web::get_edge_nodes(t1, t2);
-
-			verifies[0] = t1->txid + t1->get_hash();
-			verifies[1] = t2->txid + t2->get_hash();
-
-			verifies_pos[0] = t1->pos;
-			verifies_pos[1] = t2->pos;
-		}
 
 		serialize_t(tx);
 
 		std::thread* workers = new std::thread[config::workers];
 		char* txbucket = new char[txlen * config::workers];
 		bool* status = new bool[config::workers];
-		bool running = true;
+		std::atomic<finalize_data> data;
+		std::atomic<uint64_t> hashrate_a(0);
+		volatile bool running = true;
+		bool hashrate_done = false;
+		
+		if(pos > 1)
+		{
+			Transaction *t1, *t2;
+			finalize_data ndata;
+
+			web::get_edge_nodes(t1, t2);
+			std::string t1_hash = t1->get_hash();
+			std::string t2_hash = t2->get_hash();
+
+			memcpy(ndata.verify,      t1->txid.c_str(), 32);
+			memcpy(ndata.verify + 32, t1_hash.c_str(),  32);
+			memcpy(ndata.verify + 64, t2->txid.c_str(), 32);
+			memcpy(ndata.verify + 96, t2_hash.c_str(),  32);
+
+			ndata.pos = web::get_next_tx_pos();
+			data.store(ndata);
+
+			delete t1;
+			delete t2;
+		}
 
 		// start all the workers
 		for(int i = 0; i < config::workers; i++)
@@ -735,15 +825,51 @@ void Transaction::finalize()
 			memcpy(txbucket + i * txlen, tx, txlen);
 
 			status[i] = false;
-			workers[i] = std::thread(&Transaction::finalize_worker, &running, &status[i], pos, &txbucket[i * txlen], txlen);
+			workers[i] = std::thread(&finalize_worker, &running, &status[i], &txbucket[i * txlen], txlen, &data, &hashrate_a);
 		}
+
+		uint64_t us_inc = get_micros();
+		uint64_t us_now;
 
 		// sleep until done
 		while(running)
 		{
 			usleep(1000);
+			us_now = get_micros();
+
+			// every second
+			if(us_now - us_inc >= 1000000 && pos > 1)
+			{
+				us_inc += 1000000;
+
+				// get new edge nodes and update the edge pos
+				Transaction *t1, *t2;
+				finalize_data ndata;
+
+				web::get_edge_nodes(t1, t2);
+				std::string t1_hash = t1->get_hash();
+				std::string t2_hash = t2->get_hash();
+
+				memcpy(ndata.verify,      t1->txid.c_str(), 32);
+				memcpy(ndata.verify + 32, t1_hash.c_str(),  32);
+				memcpy(ndata.verify + 64, t2->txid.c_str(), 32);
+				memcpy(ndata.verify + 96, t2_hash.c_str(),  32);
+
+				ndata.pos = web::get_next_tx_pos();
+				data.store(ndata);
+
+				// get the hashrate
+				transaction_hashrate.store(hashrate_a.exchange(0));
+			
+				delete t1;
+				delete t2;
+			}
 		}
 
+		// hashrate is 0 since we're
+		// not mining anything anymore
+		transaction_hashrate.store(0);
+		
 		// wait until all the workers are closed
 		for(int i = 0; i < config::workers; i++)
 		{
@@ -766,6 +892,9 @@ void Transaction::finalize()
 		created = get_netul(tx);
 		txnoise = std::string(tx + 8, 32);
 		txid = std::string(tx + 40, 32);
+		
+		verifies[0] = std::string(tx + 72, 64);
+		verifies[1] = std::string(tx + 136, 64);
 
 		char txhash_c[32];
 		SHA256((uint8_t*)tx, txlen, (uint8_t*)txhash_c);
@@ -774,6 +903,8 @@ void Transaction::finalize()
 		delete[] txbucket;
 		delete[] status;
 		delete[] workers;
+
+		mtx_pow.unlock();
 	}
 
 	// convert all new inputs into inputs
@@ -781,6 +912,7 @@ void Transaction::finalize()
 	{
 		Transaction::Input input;
 
+		input.amount = input_new.amount;
 		input.balance = input_new.balance;
 		input.pubkey = sig::getpubkey(input_new.prikey);
 		input.sources = std::list<std::string>(input_new.sources);
@@ -870,7 +1002,7 @@ uint64_t Transaction::get_pos()
 	return pos;
 }
 
-void Transaction::add_input(std::string prikey, uint64_t balance, std::string prev, const std::list<std::string>& sources)
+void Transaction::add_input(std::string prikey, uint64_t amount, uint64_t balance, std::string prev, const std::list<std::string>& sources)
 {
 	if(finalized) return;
 
@@ -880,6 +1012,7 @@ void Transaction::add_input(std::string prikey, uint64_t balance, std::string pr
 	input.sources = std::list<std::string>(sources);
 	input.prikey = prikey;
 	input.balance = balance;
+	input.amount = amount;
 	input.prev = prev;
 
 	inputs_new.push_back(input);
@@ -953,6 +1086,7 @@ Json::Value Transaction::to_json()
 			input_j["pubkey"] = to_hex(input.pubkey);
 			input_j["sig"] = to_hex(input.sig);
 			input_j["balance"] = std::to_string(input.balance);
+			input_j["amount"] = std::to_string(input.amount);
 			if(!is_id_unset(input.prev)) input_j["prev"] = to_hex(input.prev);
 			if(!is_id_unset(input.next)) input_j["next"] = to_hex(input.next);
 
@@ -980,6 +1114,7 @@ Json::Value Transaction::to_json()
 			input_j["address"] = address::fromhash(input.address);
 			input_j["pubkey"] = to_hex(sig::getpubkey(input.prikey));
 			input_j["balance"] = std::to_string(input.balance);
+			input_j["amount"] = std::to_string(input.amount);
 			if(!is_id_unset(input.prev)) input_j["prev"] = to_hex(input.prev);
 			if(!is_id_unset(input.next)) input_j["next"] = to_hex(input.next);
 
@@ -1064,6 +1199,7 @@ std::string Transaction::to_string(int indent)
 					"\n"+calc_indent(indent+3)+"pubkey = " + to_hex(input.pubkey.c_str(), 16) + "..." + to_hex(input.pubkey.c_str() + input.pubkey.length() - 16, 16) +
 					"\n"+calc_indent(indent+3)+"sig = " + to_hex(input.sig.c_str(), 16) + "..." + to_hex(input.sig.c_str() + input.sig.length() - 16, 16) +
 					"\n"+calc_indent(indent+3)+"balance = " + display_coins(input.balance) +
+					"\n"+calc_indent(indent+3)+"amount = " + display_coins(input.amount) +
 					"\n"+calc_indent(indent+3)+"prev = " + (is_id_unset(input.prev) ? "unset" : to_hex(input.prev)) +
 					"\n"+calc_indent(indent+3)+"next = " + (is_id_unset(input.next) ? "unset" : to_hex(input.next)) +
 					"\n"+calc_indent(indent+3)+"sources = [";
@@ -1087,7 +1223,8 @@ std::string Transaction::to_string(int indent)
 			out += "\n"+calc_indent(indent+2)+"("+
 					"\n"+calc_indent(indent+3)+"address = " + address::fromhash(input.address) +
 					"\n"+calc_indent(indent+3)+"prikey = " + to_hex(pubkey.c_str(), 16) + "..." + to_hex(pubkey.c_str() + pubkey.length() - 16, 16) +
-					"\n"+calc_indent(indent+3)+"amount = " + display_coins(input.balance) +
+					"\n"+calc_indent(indent+3)+"balance = " + display_coins(input.balance) +
+					"\n"+calc_indent(indent+3)+"amount = " + display_coins(input.amount) +
 					"\n"+calc_indent(indent+3)+"prev = " + (is_id_unset(input.prev) ? "unset" : to_hex(input.prev)) +
 					"\n"+calc_indent(indent+3)+"next = " + (is_id_unset(input.next) ? "unset" : to_hex(input.next)) +
 					"\n"+calc_indent(indent+2)+")";

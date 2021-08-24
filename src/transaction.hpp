@@ -3,6 +3,7 @@
 
 #include <list>
 #include <string>
+#include <atomic>
 
 #include <json/json.h>
 
@@ -16,6 +17,8 @@
  *   - all signatures in inputs must be valid
  *
  */
+
+extern std::atomic<uint64_t> transaction_hashrate;
 
 class Transaction
 {
@@ -40,8 +43,6 @@ public:
 	void finalize();
 	void optimize();
 
-	static void finalize_worker(bool* running, bool* status, uint64_t pos, char* tx, size_t txlen);
-
 	std::string to_string(int indent);
 	Json::Value to_json();
 
@@ -60,7 +61,7 @@ public:
 	uint64_t get_received();
 	uint64_t get_pos();
 
-	void add_input(std::string key_pri, uint64_t balance, std::string prev, const std::list<std::string>& sources);
+	void add_input(std::string key_pri, uint64_t amount, uint64_t balance, std::string prev, const std::list<std::string>& sources);
 	void add_output(std::string address, uint64_t amount);
 	void add_output(std::string address, uint64_t amount, std::string message);
 
@@ -84,6 +85,7 @@ public:
 		std::string next;
 		std::list<std::string> sources;
 		uint64_t balance;
+		uint64_t amount;
 	};
 	
 	struct Input
@@ -97,6 +99,7 @@ public:
 		uint64_t nextpos;
 		std::list<std::string> sources;
 		uint64_t balance;
+		uint64_t amount;
 	};
 
 	struct Output

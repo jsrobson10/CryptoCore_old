@@ -222,7 +222,7 @@ public:
 	{
 		if(connected())
 		{
-			::close(sockfd);
+			::shutdown(sockfd, SHUT_RDWR);
 			sockfd = -1;
 		}
 	}

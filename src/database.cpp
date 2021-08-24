@@ -19,16 +19,21 @@ Database::~Database()
 	delete file;
 }
 
-void Database::read(char* data, size_t len)
+void Database::read(char* data, size_t size)
 {
-	file->read(data, len);
-	pos += len;
+	file->read(data, size);
+	pos += size;
+
+	if(pos > len)
+	{
+		len = pos;
+	}
 }
 
-void Database::write(const char* data, size_t len)
+void Database::write(const char* data, size_t size)
 {
-	file->write(data, len);
-	pos += len;
+	file->write(data, size);
+	pos += size;
 
 	if(pos > len)
 	{
@@ -40,11 +45,16 @@ void Database::begin(uint128_t offset)
 {
 	pos = (uint64_t)offset;
 	file->seekg(pos, std::ios::beg);
+
+	if(pos > len)
+	{
+		len = pos;
+	}
 }
 
 void Database::end(uint128_t offset)
 {
-	if(offset > len)
+	if(offset >= len)
 	{
 		pos = 0;
 		file->seekg(0, std::ios::beg);

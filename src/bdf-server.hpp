@@ -36,7 +36,6 @@ private:
 			
 			if(sock_new < 0)
 			{
-				std::cerr << "Connection failed\n";
 				continue;
 			}
 
@@ -97,13 +96,9 @@ public:
 
 	~BdfServer()
 	{
-		if(handle.joinable())
-		{
-			handle.detach();
-		}
-		
 		close();
-			
+		handle.join();
+		
 		for(auto it = connections.begin(); it != connections.end();)
 		{
 			auto last = it++;
@@ -176,7 +171,7 @@ public:
 
 	void close()
 	{
-		::close(sockfd);
+		::shutdown(sockfd, SHUT_RDWR);
 		sockfd = -1;
 	}
 

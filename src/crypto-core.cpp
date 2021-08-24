@@ -23,6 +23,8 @@
 
 using namespace Bdf;
 
+static bool running = true;
+
 static void display_help(const char** vargs)
 {
 	std::cerr << "Usage: " << vargs[0] << " ...\n";
@@ -32,6 +34,11 @@ static void display_help(const char** vargs)
 	std::cerr << "  --http-port <num>       Listen on a different http port (default is 44555).\n";
 	std::cerr << "  --connect <ip> <port?>  Connect to the given peer. Will use the default port if none is given.\n";
 	std::cerr << "\n";
+}
+
+static void on_close_signal(int v)
+{
+	running = false;
 }
 
 int main(int cargs, const char** vargs)
@@ -101,6 +108,8 @@ int main(int cargs, const char** vargs)
 	}
 
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGABRT, on_close_signal);
+	signal(SIGINT, on_close_signal);
 
 	web::init();
 	network::init(port);
@@ -114,7 +123,7 @@ int main(int cargs, const char** vargs)
 	int c = 0;
 	uint64_t cycle = 0;
 
-	for(;;)
+	while(running)
 	{
 		usleep(1000);
 
@@ -130,6 +139,9 @@ int main(int cargs, const char** vargs)
 		cycle += 1;
 	}
 
+	std::cout << "Cleaning up\n";
+
 	web::cleanup();
+	network::cleanup();
 	http::cleanup();
 }

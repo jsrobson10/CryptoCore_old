@@ -32,6 +32,7 @@ namespace network
 	void handleConnection(BdfSock<Client>* connection);
 
 	void init(int port);
+	void cleanup();
 	
 	void update();
 	void ban(BdfSock<Client>* connection);

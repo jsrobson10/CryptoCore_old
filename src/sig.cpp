@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
+#include <mutex>
 #include <unordered_map>
 #include <string>
 
@@ -24,6 +25,7 @@ namespace sig
 	};
 
 	std::unordered_map<std::string, sig_item> cache;
+	std::mutex mtx;
 };
 
 std::string sig::generate()
@@ -97,12 +99,16 @@ bool sig::seed_verify(std::string seed)
 
 std::string sig::generate(std::string seed)
 {
+	mtx.lock();
+	
 	// try to get the prikey from cache first
 	sig_item& si = cache[seed];
 	si.accessed = get_micros();
 	
 	if(si.prikey.length() > 0)
 	{
+		mtx.unlock();
+
 		return si.prikey;
 	}
 	
@@ -130,33 +136,46 @@ std::string sig::generate(std::string seed)
 	si.prikey = std::string((char*)prikey, SIG_LEN_PRIKEY);
 	si.accessed = get_micros();
 
+	mtx.unlock();
+
 	delete[] prikey;
 	return prikey_s;
 }
 
 void sig::update()
 {
-	// remove the oldest item from cache
+	// remove the oldest items from cache
 	if(cache.size() > config::cache_size)
 	{
+		mtx.lock();
+	
 		std::unordered_map<std::string, sig_item>::iterator worst;
-		uint64_t worst_time = -1;
+		__uint128_t mean_time_calc = 0;
+		uint64_t mean_time = 0;
 
+		// get the mean age of whats in cache
 		for(auto it = cache.begin(); it != cache.end(); it++)
 		{
-			uint64_t accessed = it->second.accessed;
+			mean_time_calc += it->second.accessed;
+		}
 
-			if(accessed < worst_time)
+		mean_time = mean_time_calc / cache.size();
+
+		// remove everything under the mean, approx half of whats here
+		for(auto it = cache.begin(); it != cache.end();)
+		{
+			if(it->second.accessed <= mean_time)
 			{
-				worst_time = accessed;
-				worst = it;
+				cache.erase(it++);
+			}
+
+			else
+			{
+				it++;
 			}
 		}
 
-		if(worst_time != -1)
-		{
-			cache.erase(worst);
-		}
+		mtx.unlock();
 	}
 }
 

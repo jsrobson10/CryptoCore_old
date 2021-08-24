@@ -43,6 +43,13 @@ void network::init(int port)
 	connection_port = port;
 }
 
+void network::cleanup()
+{
+	server->close();
+
+	delete server;
+}
+
 void network::broadcast(BdfReader* reader)
 {
 	broadcast_queue.push(reader);
