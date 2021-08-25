@@ -171,7 +171,7 @@ void web::update_transaction(Transaction& tx)
 	char* txc = new char[txlen];
 
 	tx.serialize(txc);
-		
+
 	chain->begin((uint128_t)tx.pos * 16);
 	uint128_t txpos = chain->read_netue();
 
@@ -303,6 +303,7 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 		return;
 	}
 
+	Transaction::Input* prev_in = nullptr;
 	Transaction* prev = nullptr;
 	std::list<std::string> sources;
 
@@ -314,6 +315,7 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 			if(in.prev != "")
 			{
 				prev = get_transaction(in.prev);
+				prev_in = &in;
 				break;
 			}
 
@@ -322,20 +324,12 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 		}
 	}
 
-	// address has only spent once
+	// address has only spent once, needs to be searched
 	if(prev == nullptr)
 	{
 		find_outputs(address, "", [&balance, &sources, &sources_new, sources_new_limit](Transaction& tx, Transaction::Output& out)
 		{
 			std::string txid = tx.get_txid();
-			
-			for(std::string& source : sources)
-			{
-				if(source == txid)
-				{
-					return true;
-				}
-			}
 			
 			if(sources_new.size() < sources_new_limit)
 			{
@@ -346,6 +340,8 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 
 			return true;
 		});
+
+		balance -= prev_in->amount;
 		
 		return;
 	}
@@ -356,15 +352,18 @@ void web::get_address_info(std::string address, uint64_t& balance, Transaction*&
 	// address spent more than once
 	for(Transaction::Input& in : prev->inputs)
 	{
-		for(std::string& source : in.sources)
+		if(in.address == address)
 		{
-			sources.push_back(source);
-
-			uint64_t source_at = get_id_data(source.c_str());
-
-			if(source_at > source_best_at)
+			for(std::string& source : in.sources)
 			{
-				source_best = source;
+				sources.push_back(source);
+	
+				uint64_t source_at = get_id_data(source.c_str());
+	
+				if(source_at < source_best_at)
+				{
+					source_best = source;
+				}
 			}
 		}
 	}

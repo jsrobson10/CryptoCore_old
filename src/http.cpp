@@ -549,6 +549,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 							transactions_j[it]["txid"] = to_hex(tx.txid);
 							transactions_j[it]["created"] = std::to_string(tx.created);
 							transactions_j[it]["received"] = std::to_string(tx.received);
+							transactions_j[it]["address"] = address;
 	
 							Json::Value& inputs_j = transactions_j[it]["inputs"];
 							Json::Value& outputs_j = transactions_j[it]["outputs"];
@@ -601,6 +602,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 							transactions_j[it]["txid"] = to_hex(tx.txid);
 							transactions_j[it]["created"] = std::to_string(tx.created);
 							transactions_j[it]["received"] = std::to_string(tx.received);
+							transactions_j[it]["address"] = address;
 	
 							if(out.msg.length() > 0)
 							{

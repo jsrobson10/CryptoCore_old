@@ -16,7 +16,7 @@
 #include <atomic>
 #include <mutex>
 
-//#define NO_MINING
+#define NO_MINING
 
 /*
  * 
@@ -700,10 +700,16 @@ static void finalize_worker(volatile bool* running, bool* status, char* tx, size
 	
 	char txhash_c[32];
 	uint64_t hashrate_c = 0;
-	uint64_t us_inc = get_micros() - 1000000;
+	uint64_t us_inc = get_micros();
 	uint64_t pos;
 	
 	RAND_bytes((uint8_t*)(tx + 8), 32);
+
+	// load everything from the parent thread
+	finalize_data gdata = data->load();
+	memcpy(tx + 72,  gdata.verify, 128);
+	put_netul(tx, us_inc);
+	pos = gdata.pos;
 
 	// only run while other threads are running
 	//
@@ -892,6 +898,7 @@ void Transaction::finalize()
 		created = get_netul(tx);
 		txnoise = std::string(tx + 8, 32);
 		txid = std::string(tx + 40, 32);
+		pos = get_id_data(txid.c_str());
 		
 		verifies[0] = std::string(tx + 72, 64);
 		verifies[1] = std::string(tx + 136, 64);
