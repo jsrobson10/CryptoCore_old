@@ -26,24 +26,19 @@ class Transaction
 public:
 
 	Transaction();
-	Transaction(const char* bytes, size_t len, const char** bytes_n, size_t* len_n, uint64_t txpos, bool trusted);
+	Transaction(const char* bytes, size_t len, bool trusted);
 	Transaction(Transaction& t);
 
 	const char* get_errors();
-
-	bool is_valid();
-	bool is_finalized();
+	
 	bool is_confirmed();
-	bool is_verified();
+	bool is_valid();
 
 	bool has_prikey();
 	int has_address(std::string address);
-	void set_verified();
 
 	void finalize();
-	void optimize();
 
-	std::string to_string(int indent);
 	Json::Value to_json();
 
 	char* serialize(char* data);
@@ -52,14 +47,8 @@ public:
 	char* serialize_t(char* data);
 	size_t serialize_t_len();
 
-	std::string get_txid();
 	std::string get_hash();
-	std::string get_prikey();
-
 	uint64_t get_total();
-	uint64_t get_created();
-	uint64_t get_received();
-	uint64_t get_pos();
 
 	void add_input(std::string key_pri, uint64_t amount, uint64_t balance, std::string prev, const std::list<std::string>& sources);
 	void add_output(std::string address, uint64_t amount);
@@ -72,9 +61,8 @@ public:
 
 	void set_verified1(std::string id);
 	void set_verified2(std::string id);
-	void set_pos(uint64_t pos);
 
-	bool add_confirm(std::string id, uint64_t pos);
+	bool add_confirm(std::string id);
 	int count_confirms();
 
 	struct InputNew
@@ -95,8 +83,6 @@ public:
 		std::string address;
 		std::string prev;
 		std::string next;
-		uint64_t prevpos;
-		uint64_t nextpos;
 		std::list<std::string> sources;
 		uint64_t balance;
 		uint64_t amount;
@@ -106,25 +92,24 @@ public:
 	{
 		std::string msg;
 		std::string address;
+		std::string referenced;
 		uint64_t amount;
 	};
 		
-	uint64_t pos;
+	uint64_t work;
 	uint64_t created;
 	uint64_t received;
+	uint64_t pos;
 
-	bool verified;
 	bool finalized;
 	bool valid;
 
 	std::string verifies[2];
 	std::string confirms[3];
 	
-	uint64_t verifies_pos[2];
-	uint64_t confirms_pos[3];
-
 	std::string txid;
 	std::string txnoise;
+	std::string token;
 	std::list<InputNew> inputs_new;
 	std::list<Input> inputs;
 	std::list<Output> outputs;

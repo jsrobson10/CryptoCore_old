@@ -6,7 +6,6 @@
 #include "sig.hpp"
 #include "address.hpp"
 #include "config.hpp"
-#include "base58.hpp"
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -52,7 +51,7 @@ namespace http
 			{"getaddress", "get information about an address, like its balance and activity", "{\"address\": address} OR /getaddress/<address>"},
 			{"gethashrate", "get current hashrate statistics and ETAs", ""},
 			{"listtransactions", "find the history of every time transactions have been made to or from some addresses", "{\"addresses\": [address, ...], \"at\"?: at, \"limit\"?: limit, \"mode\"?: \"spend\" \"receive\" or \"all\"} OR /listtransactions/<address>"},
-			{"send", "generate a transaction and send funds from at least 1 wallet to at least 1 address", "{\"inputs\": [{\"prikey\": prikey, \"amount\": amount}...], \"outputs\": [{\"address\", address, \"amount\": amount}...]}"},
+			{"send", "generate a transaction and send funds from at least 1 wallet to at least 1 address", "{\"inputs\": [{\"prikey\": prikey, \"amount\": amount}...], \"outputs\": [{\"address\", address, \"amount\": amount, \"message\": message}...]}"},
 			{"getedgenodes", "get all current edge nodes", ""},
 			{"getrawtransaction", "get a given raw transaction by its transaction ID", "{\"txid\": txid} OR /getrawtransaction/<txid>"},
 			{"decoderawtransaction", "decode a given raw transaction", "{\"transaction\": transaction}"},
@@ -225,9 +224,9 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 		Json::Value value;
 
-		value["prikey"] = base58::encode(seed);
 		value["pubkey"] = to_hex(pubkey);
-		value["address"] = address::fromhash(address);
+		value["prikey"] = address::fromhash(seed, ADDR_SECRET);
+		value["address"] = address::fromhash(address, ADDR_DEPOSIT);
 
 		return value;
 	}
@@ -246,7 +245,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 			seed = req->value["prikey"].asString();
 		}
 
-		if(seed.length() != 55)
+		if(address::verify(seed) != ADDR_SECRET)
 		{
 			Json::Value v;
 			v["error"] = "invalid prikey";
@@ -254,25 +253,15 @@ Json::Value http::handle_req(Request* req, std::string at)
 			return v;
 		}
 
-		seed = base58::decode(seed);
-
-		if(!sig::seed_verify(seed))
-		{
-			Json::Value v;
-			v["error"] = "invalid prikey";
-
-			return v;
-		}
-
-		std::string prikey = sig::generate(seed);
+		std::string prikey = sig::generate(address::gethash(seed));
 		std::string pubkey = sig::getpubkey(prikey);
 		std::string address = address::frompubkey(pubkey);
 
 		Json::Value value;
 
-		value["prikey"] = base58::encode(seed);
+		value["prikey"] = seed;
 		value["pubkey"] = to_hex(pubkey);
-		value["address"] = address::fromhash(address);
+		value["address"] = address::fromhash(address, ADDR_DEPOSIT);
 
 		return value;
 	}
@@ -291,7 +280,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 			txid = req->value["txid"].asString();
 		}
 
-		if(txid.length() != 64)
+		if(address::verify(txid) != ADDR_TRANSACTION)
 		{
 			Json::Value v;
 			v["error"] = "invalid txid";
@@ -300,7 +289,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 			return v;
 		}
 
-		std::string txid_bytes = from_hex(txid);
+		std::string txid_bytes = address::gethash(txid);
 		Transaction* tx = web::get_transaction(txid_bytes);
 
 		if(tx == nullptr)
@@ -338,7 +327,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 	else if(at == "decoderawtransaction")
 	{
 		std::string txc = from_hex(req->value["transaction"].asString());
-		Transaction tx(txc.c_str(), txc.length(), nullptr, nullptr, 0, true);
+		Transaction tx(txc.c_str(), txc.length(), true);
 
 		Json::Value v;
 		v["transaction"] = tx.to_json();
@@ -348,7 +337,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 	else if(at == "getaddress")
 	{
-		std::string address;
+		/*std::string address;
 
 		if(req->pathc >= 2)
 		{
@@ -360,7 +349,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 			address = req->value["address"].asString();
 		}
 
-		if(!address::verify(address))
+		if(address::verify(address) != ADDR_DEPOSIT)
 		{
 			Json::Value v;
 			v["error"] = "invalid address";
@@ -375,11 +364,11 @@ Json::Value http::handle_req(Request* req, std::string at)
 		Transaction* tx;
 		Json::Value v;
 
-		web::get_address_info(address_hash, balance, tx, unconfirmed, 0);
+		web::get_address_info(address_hash, balance, tx, unconfirmed, 16384);
 		
 		v["balance"] = std::to_string(balance);
 		v["address"] = address;
-/*
+		
 		Json::Value& unconfirmed_j = v["unconfirmed"];
 
 		if(unconfirmed.size() > 0)
@@ -395,9 +384,10 @@ Json::Value http::handle_req(Request* req, std::string at)
 						unconfirmed_j[it]["amount"] = std::to_string(out.amount);
 						unconfirmed_j[it]["confirms"] = tx_u->count_confirms();
 						//unconfirmed_j[it]["work"] = display_unsigned_e(tx.work);
-						unconfirmed_j[it]["txid"] = to_hex(tx_u->txid);
+						unconfirmed_j[it]["txid"] = address::fromhash(tx_u->txid, ADDR_TRANSACTION);
 						unconfirmed_j[it]["created"] = std::to_string(tx_u->created);
 						unconfirmed_j[it]["received"] = std::to_string(tx_u->received);
+						unconfirmed_j[it]["address"] = address;
 	
 						if(out.msg.length() > 0)
 						{
@@ -405,13 +395,28 @@ Json::Value http::handle_req(Request* req, std::string at)
 						}
 						
 						Json::Value& inputs_j = unconfirmed_j[it]["inputs"];
-						int i = 0;
+						Json::Value& outputs_j = unconfirmed_j[it]["outputs"];
+						int it_i = 0, it_o = 0;
 
 						for(Transaction::Input& in : tx_u->inputs)
 						{
-							unconfirmed_j[i]["address"] = address::fromhash(in.address);
+							inputs_j[it_i]["address"] = address::fromhash(in.address, ADDR_DEPOSIT);
+							inputs_j[it_i]["amount"] = std::to_string(in.amount);
 	
-							i += 1;
+							it_i += 1;
+						}
+						
+						for(Transaction::Output& out : tx_u->outputs)
+						{
+							outputs_j[it_o]["address"] = address::fromhash(out.address, ADDR_DEPOSIT);
+							outputs_j[it_o]["amount"] = std::to_string(out.amount);
+	
+							if(out.msg.length() > 0)
+							{
+								outputs_j[it_o]["message"] = out.msg;
+							}
+	
+							it_o += 1;
 						}
 						
 						it += 1;
@@ -422,14 +427,16 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 				delete tx_u;
 			}
-		}*/
+		}
 
 		if(tx != nullptr)
 		{
 			delete tx;
 		}
 
-		return v;
+		return v;*/
+
+		// TODO
 	}
 
 	else if(at == "gethashrate")
@@ -459,7 +466,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 	else if(at == "listtransactions")
 	{
-		std::list<std::string> from;
+		/*std::list<std::string> from;
 		bool get_in, get_out;
 		uint64_t at;
 		int limit;
@@ -510,7 +517,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 		{
 			std::string address = from_j[i].asString();
 
-			if(!address::verify(address))
+			if(address::verify(address) != ADDR_DEPOSIT)
 			{
 				continue;
 			}
@@ -522,7 +529,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 		{
 			std::string address = req->pathv[1];
 
-			if(address::verify(address))
+			if(address::verify(address) == ADDR_DEPOSIT)
 			{
 				from.push_back(address::gethash(address));
 			}
@@ -546,10 +553,10 @@ Json::Value http::handle_req(Request* req, std::string at)
 							transactions_j[it]["amount"] = std::to_string(in.amount);
 							transactions_j[it]["confirms"] = tx.count_confirms();
 							//transactions_j[it]["work"] = display_unsigned_e(tx.work);
-							transactions_j[it]["txid"] = to_hex(tx.txid);
+							transactions_j[it]["txid"] = address::fromhash(tx.txid, ADDR_TRANSACTION);
 							transactions_j[it]["created"] = std::to_string(tx.created);
 							transactions_j[it]["received"] = std::to_string(tx.received);
-							transactions_j[it]["address"] = address;
+							transactions_j[it]["address"] = address::fromhash(address, ADDR_DEPOSIT);
 	
 							Json::Value& inputs_j = transactions_j[it]["inputs"];
 							Json::Value& outputs_j = transactions_j[it]["outputs"];
@@ -557,7 +564,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 							for(Transaction::Input& in : tx.inputs)
 							{
-								inputs_j[it_i]["address"] = address::fromhash(in.address);
+								inputs_j[it_i]["address"] = address::fromhash(in.address, ADDR_DEPOSIT);
 								inputs_j[it_i]["amount"] = std::to_string(in.amount);
 	
 								it_i += 1;
@@ -565,7 +572,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 							
 							for(Transaction::Output& out : tx.outputs)
 							{
-								outputs_j[it_o]["address"] = address::fromhash(out.address);
+								outputs_j[it_o]["address"] = address::fromhash(out.address, ADDR_DEPOSIT);
 								outputs_j[it_o]["amount"] = std::to_string(out.amount);
 	
 								if(out.msg.length() > 0)
@@ -599,10 +606,10 @@ Json::Value http::handle_req(Request* req, std::string at)
 							transactions_j[it]["amount"] = std::to_string(out.amount);
 							transactions_j[it]["confirms"] = tx.count_confirms();
 							//transactions_j[it]["work"] = display_unsigned_e(tx.work);
-							transactions_j[it]["txid"] = to_hex(tx.txid);
+							transactions_j[it]["txid"] = address::fromhash(tx.txid, ADDR_TRANSACTION);
 							transactions_j[it]["created"] = std::to_string(tx.created);
 							transactions_j[it]["received"] = std::to_string(tx.received);
-							transactions_j[it]["address"] = address;
+							transactions_j[it]["address"] = address::fromhash(address, ADDR_DEPOSIT);
 	
 							if(out.msg.length() > 0)
 							{
@@ -615,7 +622,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 							for(Transaction::Input& in : tx.inputs)
 							{
-								inputs_j[it_i]["address"] = address::fromhash(in.address);
+								inputs_j[it_i]["address"] = address::fromhash(in.address, ADDR_DEPOSIT);
 								inputs_j[it_i]["amount"] = std::to_string(in.amount);
 	
 								it_i += 1;
@@ -623,7 +630,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 							
 							for(Transaction::Output& out : tx.outputs)
 							{
-								outputs_j[it_o]["address"] = address::fromhash(out.address);
+								outputs_j[it_o]["address"] = address::fromhash(out.address, ADDR_DEPOSIT);
 								outputs_j[it_o]["amount"] = std::to_string(out.amount);
 	
 								if(out.msg.length() > 0)
@@ -650,19 +657,21 @@ Json::Value http::handle_req(Request* req, std::string at)
 
 		v["at"] = at;
 
-		return v;
+		return v;*/
+
+		// TODO
 	}
 
 	else if(at == "send")
 	{
-		Json::Value& inputs_j = req->value["inputs"];
+		/*Json::Value& inputs_j = req->value["inputs"];
 		Json::Value& outputs_j = req->value["outputs"];
 
 		int len_in = inputs_j.size();
 		int len_out = outputs_j.size();
 
-		uint64_t total_in = 0;
-		uint64_t total_out = 0;
+		__uint128_t total_in = 0;
+		__uint128_t total_out = 0;
 
 		Transaction tx_final;
 
@@ -682,16 +691,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 				std::string prikey = inputs_j[i]["prikey"].asString();
 				uint64_t amount = std::stoul(inputs_j[i]["amount"].asString());
 
-				if(prikey.length() != 55)
-				{
-					Json::Value v;
-					v["error"] = "invalid prikey";
-					return v;
-				}
-
-				prikey = base58::decode(prikey);
-
-				if(!sig::seed_verify(prikey))
+				if(address::verify(prikey) != ADDR_SECRET)
 				{
 					Json::Value v;
 					v["error"] = "invalid prikey";
@@ -705,14 +705,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 					return v;
 				}
 
-				if(amount + total_in < total_in)
-				{
-					Json::Value v;
-					v["error"] = "insufficient funds 1";
-					return v;
-				}
-
-				prikey = sig::generate(prikey);
+				prikey = sig::generate(address::gethash(prikey));
 
 				Transaction* tx;
 				uint64_t balance_a;
@@ -722,7 +715,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 				std::string address = address::fromprikey(prikey);
 				std::string txid;
 
-				web::get_address_info(address, balance_a, tx, unconfirmed, 65536);
+				web::get_address_info(address, balance_a, tx, unconfirmed, 16384);
 
 				balance = 0;
 
@@ -750,13 +743,6 @@ Json::Value http::handle_req(Request* req, std::string at)
 					{
 						if(out.address == address)
 						{
-							// this shouldn't happen ever.
-							// if this happens, something is very wrong. 
-							if(balance + out.amount < balance)
-							{
-								std::cout << "integer overflow found. double spending has happened. balance = " << display_unsigned_e(balance) << ", out.amount = " << out.amount << "\n";
-							}
-
 							balance += out.amount;
 							unconfirmed_txids.push_back(source->get_txid());
 
@@ -771,7 +757,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 				if(amount > balance)
 				{
 					Json::Value v;
-					v["error"] = "insufficient funds 2";
+					v["error"] = "insufficient funds";
 					return v;
 				}
 
@@ -796,7 +782,7 @@ Json::Value http::handle_req(Request* req, std::string at)
 				std::string address = outputs_j[i]["address"].asString();
 				uint64_t amount = std::stoul(outputs_j[i]["amount"].asString());
 
-				if(!address::verify(address))
+				if(address::verify(address) != ADDR_DEPOSIT)
 				{
 					Json::Value v;
 					v["error"] = "invalid address";
@@ -821,13 +807,32 @@ Json::Value http::handle_req(Request* req, std::string at)
 		{
 			Json::Value v;
 			v["error"] = "total in must match total out";
-			std::cout << "total in = " << total_in << ", total out = " << total_out << ", len in = " << len_in << ", len out = " << len_out << "\n";
 			return v;
 		}
 
+		if(total_in > (uint64_t)-1 || total_out > (uint64_t)-1)
+		{
+			Json::Value v;
+			v["error"] = "insufficient funds";
+			return v;
+		}
+
+		tx_final.finalize();
+
+		const char* invalid_reason = tx_final.get_errors();
+
+		if(invalid_reason)
+		{
+			Json::Value v;
+			v["error"] = invalid_reason;
+			return v;
+		}
+		
 		web::add_transaction(tx_final);
 
-		return tx_final.to_json();
+		return tx_final.to_json();*/
+
+		// TODO
 	}
 
 	std::string error = generate_error("invalid method");
@@ -1274,10 +1279,10 @@ void http::process_req(Request* req)
 		
 			// handle what the request is asking	
 			std::string at = to_lower(req->pathv[0]);
+				req->respond(handle_req(req, at));
 
 			try
 			{
-				req->respond(handle_req(req, at));
 			}
 
 			catch(std::exception& e)
@@ -1290,6 +1295,8 @@ void http::process_req(Request* req)
 				req->respond(500, "Internal", headers, content);
 
 				std::cerr << "Exception caught: what() = " << e.what() << std::endl;
+
+				throw e;
 			}
 
 			delete req;

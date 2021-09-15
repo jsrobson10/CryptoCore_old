@@ -14,7 +14,7 @@ int Control::process_new_transaction(Transaction* t)
 		return -1;
 	}
 
-	std::string txid = t->get_txid();
+	std::string txid = t->txid;
 
 	if(contains_id(txid))
 	{

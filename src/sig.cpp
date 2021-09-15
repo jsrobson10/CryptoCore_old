@@ -55,46 +55,20 @@ std::string sig::generate()
 
 std::string sig::seed_generate()
 {
-	uint8_t seed[65];
+	uint8_t seed[32];
 
-	seed[0] = SEED_BEGIN_CHAR;
+	RAND_bytes(seed, 32);
 
-	RAND_bytes(seed + 1, 32);
-	SHA256(seed + 1, 32, seed + 33);
-
-	return std::string((char*)seed, 40);
+	return std::string((char*)seed, 32);
 }
 
 std::string sig::seed_generate(std::string data)
 {
-	uint8_t seed[65];
+	uint8_t seed[32];
 
-	seed[0] = SEED_BEGIN_CHAR;
+	SHA256((uint8_t*)data.c_str(), data.length(), seed);
 
-	SHA256((uint8_t*)data.c_str(), data.length(), seed + 1);
-	SHA256(seed + 1, 32, seed + 33);
-
-	return std::string((char*)seed, 40);
-}
-
-bool sig::seed_verify(std::string seed)
-{
-	if(seed.length() != 40 || (uint8_t)seed[0] != SEED_BEGIN_CHAR)
-	{
-		return false;
-	}
-		
-	char checksum[32];
-
-	SHA256((uint8_t*)seed.c_str() + 1, 32, (uint8_t*)checksum);
-
-	return (checksum[0] == seed[33] &&
-			checksum[1] == seed[34] &&
-			checksum[2] == seed[35] &&
-			checksum[3] == seed[36] &&
-			checksum[4] == seed[37] &&
-			checksum[5] == seed[38] &&
-			checksum[6] == seed[39]);
+	return std::string((char*)seed, 32);
 }
 
 std::string sig::generate(std::string seed)

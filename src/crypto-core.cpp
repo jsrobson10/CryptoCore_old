@@ -8,6 +8,7 @@
 #include "helpers.hpp"
 #include "config.hpp"
 #include "base58.hpp"
+#include "hashmap.hpp"
 #include "cpu.hpp"
 
 #include <bdf/Bdf.hpp>
@@ -39,6 +40,40 @@ static void display_help(const char** vargs)
 static void on_close_signal(int v)
 {
 	running = false;
+}
+
+void test1()
+{
+	Hashmap hm("test.hm", true);
+	char buff[1024];
+	uint64_t pos;
+
+	if((pos = hm.create("01234567abcdefgh98765432mnbvcxza", 26)) == -1) return;
+	hm.write("abc", 4);
+
+	if((pos = hm.create("01234667abcdefgh98765432mnbvcxza", 26)) == -1) return;
+	hm.write("def", 4);
+
+	if((pos = hm.create("01234767abcdefgh98765432mnbvcxza", 26)) == -1) return;
+	hm.write("ghij", 5);
+
+	if((pos = hm.get("01234567abcdefgh98765432mnbvcxza")) == -1) return;
+	hm.read(buff, 4);
+	std::cout << buff << std::endl;
+
+	if((pos = hm.get("01234667abcdefgh98765432mnbvcxza")) == -1) return;
+	hm.read(buff, 4);
+	std::cout << buff << std::endl;
+
+	if((pos = hm.get("01234767abcdefgh98765432mnbvcxza")) == -1) return;
+	hm.read(buff, 5);
+	std::cout << buff << std::endl;
+
+	std::cout << "at: " << hm.get("01234767abcdefgh98765432mnbvcxza") << std::endl;
+
+	hm.remove("01234767abcdefgh98765432mnbvcxza");
+
+	std::cout << "at: " << hm.get("01234767abcdefgh98765432mnbvcxza") << std::endl;
 }
 
 int main(int cargs, const char** vargs)
@@ -91,6 +126,12 @@ int main(int cargs, const char** vargs)
 				{
 					i += 1;
 				}
+			}
+
+			else if(arg == "--test1")
+			{
+				test1();
+				return 0;
 			}
 	
 			else

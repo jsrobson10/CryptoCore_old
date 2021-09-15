@@ -303,25 +303,6 @@ loop:
 	return std::string(end, len);
 }
 
-std::string display_unsigned_e(__uint128_t v)
-{
-	char digits[39];
-	char* end = digits + 39;
-	
-	goto loop;
-
-	while(v != 0)
-	{
-loop:
-		end -= 1;
-
-		*end = '0' + (v % 10);
-		v /= 10;
-	}
-
-	return std::string(end, 39 - (size_t)end + (size_t)digits);
-}
-
 bool bytes_are_equal(const char* a, const char* b, size_t len)
 {
 	const char* e = a + len;
@@ -338,30 +319,6 @@ bool bytes_are_equal(const char* a, const char* b, size_t len)
 	}
 
 	return true;
-}
-
-uint64_t get_id_data(const char* id)
-{
-	return (((__uint128_t)(id[3] & 255) << 56) ^
-			((__uint128_t)(id[7] & 255) << 48) ^
-			((__uint128_t)(id[11] & 255) << 40) ^
-			((__uint128_t)(id[15] & 255) << 32) ^
-			((__uint128_t)(id[19] & 255) << 24) ^
-			((__uint128_t)(id[23] & 255) << 16) ^
-			((__uint128_t)(id[27] & 255) << 8) ^
-			((__uint128_t)(id[31] & 255)));
-}
-
-void set_id_data(char* id, uint64_t data)
-{
-	id[3] = (data >> 56) & 255;
-	id[7] = (data >> 48) & 255;
-	id[11] = (data >> 40) & 255;
-	id[15] = (data >> 32) & 255;
-	id[19] = (data >> 24) & 255;
-	id[23] = (data >> 16) & 255;
-	id[27] = (data >> 8) & 255;
-	id[31] = data & 255;
 }
 
 std::string to_hex(std::string data)
@@ -398,26 +355,6 @@ void memcpy_if(char* dst, const char* src, char c, size_t len, bool cond)
 	{
 		memset(dst, c, len);
 	}
-}
-
-void put_netue(char* data, __uint128_t num)
-{
-	data[0] = (num >> 120) & 255;
-	data[1] = (num >> 112) & 255;
-	data[2] = (num >> 104) & 255;
-	data[3] = (num >> 96) & 255;
-	data[4] = (num >> 88) & 255;
-	data[5] = (num >> 80) & 255;
-	data[6] = (num >> 72) & 255;
-	data[7] = (num >> 64) & 255;
-	data[8] = (num >> 56) & 255;
-	data[9] = (num >> 48) & 255;
-	data[10] = (num >> 40) & 255;
-	data[11] = (num >> 32) & 255;
-	data[12] = (num >> 24) & 255;
-	data[13] = (num >> 16) & 255;
-	data[14] = (num >> 8) & 255;
-	data[15] = num & 255;
 }
 
 void put_netul(char* data, uint64_t num)
@@ -458,26 +395,6 @@ void put_netd(char* data, double num)
 	uint64_t num_int = *(uint64_t*)&num;
 
 	put_netul(data, num_int);
-}
-
-__uint128_t get_netue(const char* data)
-{
-	return (((__uint128_t)(data[0] & 255) << 120) ^
-			((__uint128_t)(data[1] & 255) << 112) ^
-			((__uint128_t)(data[2] & 255) << 104) ^
-			((__uint128_t)(data[3] & 255) << 96) ^
-			((__uint128_t)(data[4] & 255) << 88) ^
-			((__uint128_t)(data[5] & 255) << 80) ^
-			((__uint128_t)(data[6] & 255) << 72) ^
-			((__uint128_t)(data[7] & 255) << 64) ^
-			((__uint128_t)(data[8] & 255) << 56) ^
-			((__uint128_t)(data[9] & 255) << 48) ^
-			((__uint128_t)(data[10] & 255) << 40) ^
-			((__uint128_t)(data[11] & 255) << 32) ^
-			((__uint128_t)(data[12] & 255) << 24) ^
-			((__uint128_t)(data[13] & 255) << 16) ^
-			((__uint128_t)(data[14] & 255) << 8) ^
-			((__uint128_t)(data[15] & 255)));
 }
 
 uint64_t get_netul(const char* data)

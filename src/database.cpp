@@ -1,17 +1,28 @@
 
 #include <fstream>
+#include <exception>
 
 #include "database.hpp"
 #include "helpers.hpp"
 
-Database::Database(std::string filename)
+Database::Database(std::string filename, bool clear)
 {
+	if(clear)
+	{
+		std::ofstream f(filename, std::ios::binary | std::ios::trunc);
+		f.close();
+	}
+		
 	file = new std::fstream(filename, std::ios::binary | std::ios::in | std::ios::out | std::ios::ate);
-
 	size_t filelen = file->tellg();
 
 	len = filelen;
 	pos = filelen;
+}
+
+Database::Database(std::string filename) : Database (filename, false)
+{
+	
 }
 
 Database::~Database()
@@ -26,13 +37,17 @@ void Database::read(char* data, size_t size)
 
 	if(pos > len)
 	{
-		len = pos;
+		throw std::overflow_error("database read overflow");
 	}
 }
 
 void Database::write(const char* data, size_t size)
 {
-	file->write(data, size);
+	if(data != nullptr)
+	{
+		file->write(data, size);
+	}
+
 	pos += size;
 
 	if(pos > len)
@@ -41,48 +56,46 @@ void Database::write(const char* data, size_t size)
 	}
 }
 
-void Database::begin(uint128_t offset)
+void Database::begin(uint64_t offset)
 {
-	pos = (uint64_t)offset;
+	pos = offset;
 	file->seekg(pos, std::ios::beg);
 
 	if(pos > len)
 	{
-		len = pos;
+		throw std::overflow_error("database position overflow");
 	}
 }
 
-void Database::end(uint128_t offset)
+void Database::end(uint64_t offset)
 {
-	if(offset >= len)
+	if(offset > len)
 	{
-		pos = 0;
-		file->seekg(0, std::ios::beg);
+		throw std::overflow_error("database position overflow");
 	}
 	
 	else
 	{
-		pos = len - (uint64_t)offset;
+		pos = len - offset;
 		file->seekg(pos, std::ios::beg);
 	}
 }
 
-void Database::shift(int128_t offset)
+void Database::shift(int64_t offset)
 {
-	if(offset < 0 && -offset > pos)
+	if(pos + offset > len || pos < -offset)
 	{
-		pos = 0;
-		file->seekg(0, std::ios::beg);
+		throw std::overflow_error("database position overflow");
 	}
 	
 	else
 	{
-		pos += (int64_t)offset;
+		pos += offset;
 		file->seekg(pos, std::ios::beg);
 	}
 }
 
-uint128_t Database::get_pos()
+uint64_t Database::get_pos()
 {
 	if(pos == -1)
 	{
@@ -92,7 +105,7 @@ uint128_t Database::get_pos()
 	return pos;
 }
 
-uint128_t Database::get_len()
+uint64_t Database::get_len()
 {
 	return len;
 }
@@ -110,14 +123,6 @@ void Database::close()
 bool Database::eof()
 {
 	return pos >= len;
-}
-
-uint128_t Database::read_netue()
-{
-	char data[16];
-	read(data, 16);
-	uint128_t v = get_netue(data);
-	return v;
 }
 
 uint64_t Database::read_netul()
@@ -153,13 +158,6 @@ float Database::read_netf()
 	char data[4];
 	read(data, 4);
 	return get_netf(data);
-}
-
-void Database::write_netue(uint128_t v)
-{
-	char data[16];
-	put_netue(data, v);
-	write(data, 16);
 }
 
 void Database::write_netul(uint64_t v)
